@@ -1,0 +1,392 @@
+import * as pty from "node-pty";
+import type { IPty } from "node-pty";
+import { mkdirSync, existsSync, unlinkSync } from "node:fs";
+import { spawn as spawnChild } from "node:child_process";
+import net from "node:net";
+import path from "node:path";
+
+// Bridges browser terminals to real, host-persistent processes.
+//
+// Each Session owns exactly one node-pty child: a `dtach` attach-client. That
+// client is dtach's *only* attaching process — dtach itself never sees more
+// than one, which is what keeps it chrome-free and resize-clean (see the
+// plan's persistence discussion). Any number of browser WebSocket connections
+// may subscribe to that single child's data stream and write to it; the
+// fan-out/fan-in across tabs happens here in the manager, not in dtach.
+//
+// The child is spawned once and kept alive for as long as this Node process
+// runs, independent of how many browser tabs are attached — closing the last
+// tab does NOT kill it. That means the common case (browser tab closes,
+// reopens later, Node process never restarted) never needs a fresh dtach-level
+// reattach at all: the scrollback ring buffer below is a continuous,
+// gap-free record of everything the session produced while unwatched, so
+// replaying it reconstructs the screen exactly. A fresh OS-level `dtach -a`
+// attach (and the redraw-reliability question in Risk 1 of the plan) is only
+// needed when this Node process itself restarts and the child is gone.
+//
+// The underlying dtach *master* (which actually owns the program) is a
+// separate, untracked, fire-and-forget process bootstrapped once via `dtach
+// -n` — see Session.spawn() for why conflating master and attach-client was
+// Milestone 1's first real finding.
+
+export interface CreateSessionOptions {
+  id: string;
+  cwd: string;
+  /** Shell command line to run inside the session, e.g. "claude", "bash". */
+  command: string;
+  cols: number;
+  rows: number;
+}
+
+export interface SessionInfo {
+  id: string;
+  cwd: string;
+  command: string;
+  cols: number;
+  rows: number;
+  createdAt: number;
+  alive: boolean;
+  subscriberCount: number;
+}
+
+type DataListener = (chunk: Buffer) => void;
+type ExitListener = () => void;
+
+// Enough for a handful of full-screen repaints of a typical TUI; more than
+// enough to reconstruct "the last screen" without holding unbounded history.
+const SCROLLBACK_MAX_BYTES = 256 * 1024;
+
+export class Session {
+  readonly id: string;
+  readonly cwd: string;
+  readonly command: string;
+  readonly socketPath: string;
+  readonly createdAt: number;
+
+  private ptyProcess: IPty | null = null;
+  private cols: number;
+  private rows: number;
+  private scrollback: Buffer[] = [];
+  private scrollbackBytes = 0;
+  private dataListeners = new Set<DataListener>();
+  private exitListeners = new Set<ExitListener>();
+
+  constructor(opts: {
+    id: string;
+    cwd: string;
+    command: string;
+    socketPath: string;
+    cols: number;
+    rows: number;
+  }) {
+    this.id = opts.id;
+    this.cwd = opts.cwd;
+    this.command = opts.command;
+    this.socketPath = opts.socketPath;
+    this.cols = opts.cols;
+    this.rows = opts.rows;
+    this.createdAt = Date.now();
+  }
+
+  get isAlive(): boolean {
+    return this.ptyProcess !== null;
+  }
+
+  get subscriberCount(): number {
+    return this.dataListeners.size;
+  }
+
+  private spawning: Promise<void> | null = null;
+
+  /**
+   * Spawn (or respawn) this session's dtach attach-client, bootstrapping the
+   * underlying dtach master first if it doesn't exist yet. A no-op if a
+   * client is already running or a spawn is already in flight — call sites
+   * don't need to check `isAlive` first.
+   *
+   * Deliberately does NOT use `dtach -A` (attach-or-create) for the tracked
+   * client: Milestone 1 found empirically that when `-A` creates a session,
+   * the process it spawns is *itself* the master (dtach forks the program
+   * as its child but does not detach into a separate master), not merely an
+   * attach-client. Killing that process — which is exactly what happens on
+   * every graceful shutdown/redeploy via killAll() below — killed the
+   * program too, defeating the entire point. Master creation (`-n`, which
+   * creates and immediately detaches/exits on its own) is therefore always
+   * a separate, untracked, fire-and-forget step; only the subsequent
+   * attach-only (`-a`) process is ever tracked as this.ptyProcess.
+   */
+  spawn(): void {
+    if (this.ptyProcess || this.spawning) return;
+    this.spawning = this.spawnInternal()
+      .catch((err) => {
+        console.error(`[pty-manager] failed to spawn session ${this.id}:`, err);
+      })
+      .finally(() => {
+        this.spawning = null;
+      });
+  }
+
+  private async spawnInternal(): Promise<void> {
+    if (!(await this.socketIsLive())) {
+      // Either this session has never run, or its master died and left a
+      // stale socket file behind (dtach doesn't clean these up itself) —
+      // either way, `-a` alone would fail, so bootstrap a fresh master.
+      try {
+        unlinkSync(this.socketPath);
+      } catch {
+        // ENOENT is the expected case (no prior session at all).
+      }
+      await this.bootstrapMaster();
+    }
+    this.attachClient();
+  }
+
+  private socketIsLive(): Promise<boolean> {
+    if (!existsSync(this.socketPath)) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const probe = net.createConnection(this.socketPath);
+      probe.once("connect", () => {
+        probe.destroy();
+        resolve(true);
+      });
+      probe.once("error", () => resolve(false));
+    });
+  }
+
+  /** Create the dtach master and exit — no attach, nothing to track. */
+  private bootstrapMaster(): Promise<void> {
+    const shell = process.env.SHELL || "/bin/bash";
+    const unitName = `crs-${this.id}-${Date.now()}`;
+
+    return new Promise((resolve, reject) => {
+      // Wrapped in a transient `systemd --user` scope so the master lands
+      // in its OWN cgroup — never this Node process's service cgroup. Under
+      // the deploy plan's systemd unit, `systemctl --user restart` uses the
+      // default KillMode=control-group, which SIGTERMs every process in the
+      // *service's* cgroup on every redeploy. A master spawned as a plain
+      // child would die right along with it — silently defeating the whole
+      // "sessions survive redeploys" premise. Verified in Milestone 1 by
+      // restarting the dev server's own transient scope and confirming a
+      // master started this way survives. Requires `systemd-run --user` to
+      // be available, i.e. a real host with a systemd user session — not a
+      // plain container, which is one more reason this runs on the host
+      // (see the plan's pivotal architecture decision).
+      const child = spawnChild(
+        "systemd-run",
+        [
+          "--user",
+          "--scope",
+          "--collect",
+          "-u",
+          unitName,
+          "--",
+          "dtach",
+          "-n",
+          this.socketPath,
+          shell,
+          "-lc",
+          this.command,
+        ],
+        { cwd: this.cwd, env: process.env, stdio: "ignore" },
+      );
+      child.on("error", reject);
+      child.on("exit", (code) => {
+        if (code === 0) resolve();
+        else
+          reject(
+            new Error(`master bootstrap exited with code ${code} (unit ${unitName})`),
+          );
+      });
+    });
+  }
+
+  /** Spawn the one attach-only client this process tracks and can safely kill. */
+  private attachClient(): void {
+    const ptyProcess = pty.spawn(
+      "dtach",
+      [
+        "-a",
+        this.socketPath,
+        // Never treat any input byte as a detach keystroke — this process
+        // detaches by exiting (kill()), not via a magic character passed
+        // through from the browser.
+        "-E",
+        // Don't let dtach intercept Ctrl-Z as a suspend either; pass it
+        // through to the program like any other keystroke.
+        "-z",
+        // On (re)attach, ask the program to redraw via SIGWINCH rather than
+        // dtach's default Ctrl-L. This is the one setting Milestone 1 exists
+        // to validate empirically against a real TUI (see the plan's Risk 1) —
+        // WINCH is what most resize-aware TUI frameworks already listen for,
+        // whereas Ctrl-L relies on the program treating that byte specially.
+        "-r",
+        "winch",
+      ],
+      {
+        name: "xterm-256color",
+        cols: this.cols,
+        rows: this.rows,
+        cwd: this.cwd,
+        env: process.env,
+      },
+    );
+
+    ptyProcess.onData((data) => {
+      const chunk = Buffer.from(data, "utf8");
+      this.pushScrollback(chunk);
+      for (const listener of this.dataListeners) listener(chunk);
+    });
+
+    ptyProcess.onExit(() => {
+      this.ptyProcess = null;
+      for (const listener of this.exitListeners) listener();
+    });
+
+    this.ptyProcess = ptyProcess;
+    this.nudgeRedraw();
+  }
+
+  /**
+   * Force a real repaint on every fresh attach by resizing away from and
+   * back to the current size. Milestone 1 found empirically that dtach's own
+   * `-r winch` redraw request is not enough on its own: Claude's Ink-based
+   * TUI only re-renders when it detects an actual dimension change (Node's
+   * tty resize-event machinery itself skips firing if the reported size is
+   * unchanged), so reattaching at the *same* size — the common case, since a
+   * reconnecting browser tab typically fits to the same window — produced a
+   * blank screen even with winch. A same-size nudge (±1 row) wasn't a big
+   * enough delta to reliably trigger it either; a proportionally larger dip
+   * (half the rows, floor of 4) was. This runs on every attach regardless of
+   * whether the size actually changed, so a real resize from the client
+   * still lands correctly on top of it.
+   */
+  private nudgeRedraw(): void {
+    const dipRows = Math.max(4, Math.floor(this.rows / 2));
+    setTimeout(() => {
+      this.ptyProcess?.resize(this.cols, dipRows);
+      setTimeout(() => {
+        this.ptyProcess?.resize(this.cols, this.rows);
+      }, 400);
+    }, 300);
+  }
+
+  private pushScrollback(chunk: Buffer): void {
+    this.scrollback.push(chunk);
+    this.scrollbackBytes += chunk.length;
+    while (
+      this.scrollbackBytes > SCROLLBACK_MAX_BYTES &&
+      this.scrollback.length > 1
+    ) {
+      const dropped = this.scrollback.shift();
+      if (dropped) this.scrollbackBytes -= dropped.length;
+    }
+  }
+
+  /** Everything currently buffered, oldest first — replay this to a newly-attaching client. */
+  getScrollback(): Buffer {
+    return Buffer.concat(this.scrollback);
+  }
+
+  write(data: string): void {
+    this.ptyProcess?.write(data);
+  }
+
+  resize(cols: number, rows: number): void {
+    this.cols = cols;
+    this.rows = rows;
+    // Resizing the pty our dtach attach-client lives in delivers SIGWINCH to
+    // it, which dtach forwards into the session — the same mechanism a real
+    // resized SSH terminal would trigger. No special-casing needed here.
+    this.ptyProcess?.resize(cols, rows);
+  }
+
+  onData(listener: DataListener): () => void {
+    this.dataListeners.add(listener);
+    return () => this.dataListeners.delete(listener);
+  }
+
+  onExit(listener: ExitListener): () => void {
+    this.exitListeners.add(listener);
+    return () => this.exitListeners.delete(listener);
+  }
+
+  /** Kill our attach-client only. The dtach master and the program it's running survive. */
+  kill(): void {
+    this.ptyProcess?.kill();
+    this.ptyProcess = null;
+  }
+
+  toInfo(): SessionInfo {
+    return {
+      id: this.id,
+      cwd: this.cwd,
+      command: this.command,
+      cols: this.cols,
+      rows: this.rows,
+      createdAt: this.createdAt,
+      alive: this.isAlive,
+      subscriberCount: this.subscriberCount,
+    };
+  }
+}
+
+export class PtyManager {
+  private sessions = new Map<string, Session>();
+  private readonly sessionsDir: string;
+
+  constructor(opts: { sessionsDir: string }) {
+    // Must be absolute: dtach is spawned with cwd set to the *session's*
+    // project directory (e.g. a user's repo), not the server's cwd, so a
+    // relative sessionsDir would resolve against the wrong directory and
+    // dtach would look for the socket in the wrong place entirely.
+    this.sessionsDir = path.resolve(opts.sessionsDir);
+    mkdirSync(this.sessionsDir, { recursive: true });
+  }
+
+  private socketPathFor(id: string): string {
+    return path.join(this.sessionsDir, `${id}.sock`);
+  }
+
+  /**
+   * Get the tracked session for `id`, creating and spawning it if this is
+   * the first time this process has seen it. If a previously-tracked
+   * session's attach-client has died (Node restart, crash), respawn it —
+   * this is the fresh-dtach-reattach path.
+   */
+  getOrCreate(opts: CreateSessionOptions): Session {
+    let session = this.sessions.get(opts.id);
+    if (!session) {
+      session = new Session({
+        id: opts.id,
+        cwd: opts.cwd,
+        command: opts.command,
+        socketPath: this.socketPathFor(opts.id),
+        cols: opts.cols,
+        rows: opts.rows,
+      });
+      this.sessions.set(opts.id, session);
+    }
+    if (!session.isAlive) {
+      session.spawn();
+    }
+    return session;
+  }
+
+  get(id: string): Session | undefined {
+    return this.sessions.get(id);
+  }
+
+  list(): SessionInfo[] {
+    return [...this.sessions.values()].map((s) => s.toInfo());
+  }
+
+  kill(id: string): void {
+    this.sessions.get(id)?.kill();
+    this.sessions.delete(id);
+  }
+
+  /** Kill every tracked attach-client. Called on server shutdown; the dtach masters survive. */
+  killAll(): void {
+    for (const id of [...this.sessions.keys()]) this.kill(id);
+  }
+}

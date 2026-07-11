@@ -6,7 +6,23 @@ import cors from "@fastify/cors";
 
 export const securityPlugin = fp(async (app: FastifyInstance) => {
   // Security headers (CSP, HSTS, etc.).
-  await app.register(helmet);
+  await app.register(helmet, {
+    contentSecurityPolicy: {
+      directives: {
+        // Helmet's default directives include upgrade-insecure-requests,
+        // which tells the browser to silently rewrite every same-origin
+        // http:// subresource request to https:// — including behind a
+        // reverse proxy (Traefik) that terminates TLS and talks plain HTTP
+        // to this app internally, which is exactly this app's deployment
+        // model (see the plan). With it on, every asset request 404s/503s
+        // against a port that never speaks TLS; this cost real time to
+        // diagnose (looked identical to a blank/broken terminal). Disabled
+        // by setting the directive to null, helmet's documented way to
+        // drop a default directive.
+        upgradeInsecureRequests: null,
+      },
+    },
+  });
 
   // Basic abuse protection. Tune via RATE_LIMIT_MAX / RATE_LIMIT_WINDOW.
   await app.register(rateLimit, {

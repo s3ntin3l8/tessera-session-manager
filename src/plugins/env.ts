@@ -39,13 +39,27 @@ const schema = {
       type: "string",
       default: "1 minute",
     },
+    // Directory holding dtach sockets, one per terminal session. Sessions
+    // outlive this process (and its redeploys) as long as this directory
+    // does too — see .claude/plans/ok-i-m-thinking-of-merry-corbato.md.
+    SESSIONS_DIR: {
+      type: "string",
+      default: "./data/sessions",
+    },
   },
 };
 
 export const envPlugin = fp(async (app) => {
   await app.register(env, {
     schema: schema,
-    dotenv: true,
+    // Skip a real local .env under test: it's a developer's own machine
+    // config (e.g. a PORT override to dodge another project's dev server
+    // on the same box) and process.env always wins over it anyway, but an
+    // *absent* key falls through to the .env file's value rather than the
+    // schema default, which would make "defaults" tests fail depending on
+    // what happens to be in a contributor's untracked .env. CI never has
+    // one (it's gitignored), so this only changes local test behavior.
+    dotenv: process.env.NODE_ENV !== "test",
   });
 });
 
@@ -60,6 +74,7 @@ declare module "fastify" {
       CORS_ORIGIN: string;
       RATE_LIMIT_MAX: number;
       RATE_LIMIT_WINDOW: string;
+      SESSIONS_DIR: string;
     };
   }
 }

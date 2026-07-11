@@ -14,7 +14,10 @@ describe("env plugin", () => {
 
   it("loads with default values (NODE_ENV may be set by test runner)", async () => {
     // Clear the per-file DATABASE_URL injected by test/setup.ts to assert the
-    // schema default is applied.
+    // schema default is applied. PORT doesn't need the same treatment:
+    // envPlugin skips dotenv entirely under NODE_ENV=test (see env.ts), so a
+    // developer's real local .env — e.g. a PORT override to dodge a conflict
+    // with another project's dev server, as on this box — never leaks in.
     delete process.env.DATABASE_URL;
     const app = await buildApp();
     expect(app.config.PORT).toBe(3000);
