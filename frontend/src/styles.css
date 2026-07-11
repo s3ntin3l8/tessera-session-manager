@@ -1,0 +1,157 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #181818;
+  color: #ddd;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 260px;
+  flex-shrink: 0;
+  background: #202020;
+  border-right: 1px solid #333;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.sidebar h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #888;
+  margin: 0 0 8px;
+}
+
+.dockview-container {
+  flex: 1;
+  min-width: 0;
+}
+
+.project-section {
+  margin-bottom: 12px;
+}
+
+.project-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.project-name {
+  flex: 1;
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.session-open {
+  flex: 1;
+  text-align: left;
+  background: none;
+  border: none;
+  color: #ccc;
+  cursor: pointer;
+  padding: 3px 4px;
+  border-radius: 3px;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-open:hover {
+  background: #2c2c2c;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-dot.alive {
+  background: #4caf50;
+}
+
+.status-dot.detached {
+  background: #777;
+}
+
+button {
+  background: #2c2c2c;
+  border: 1px solid #3a3a3a;
+  color: #ccc;
+  border-radius: 3px;
+  font-size: 12px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #383838;
+}
+
+button.danger:hover {
+  background: #5a2020;
+  border-color: #7a2a2a;
+}
+
+button.danger.armed {
+  background: #7a2a2a;
+  border-color: #a83a3a;
+  color: #fff;
+}
+
+.inline-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0;
+}
+
+.inline-form input {
+  background: #151515;
+  border: 1px solid #333;
+  color: #ddd;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.inline-form.new-project {
+  margin-top: 16px;
+  border-top: 1px solid #333;
+  padding-top: 12px;
+}
