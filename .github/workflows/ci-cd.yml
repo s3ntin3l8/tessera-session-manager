@@ -14,6 +14,10 @@ jobs:
     with:
       node-version: "26"
       test-script: "test:coverage"
+      # Line coverage is at ~92% as of M5 (see plan) — 80 is a real floor with
+      # headroom to add code without CI being fragile, not a cosmetic bump
+      # off the template's starter 0.
+      coverage-fail-under: "80"
     secrets: inherit
 
   build-docker:

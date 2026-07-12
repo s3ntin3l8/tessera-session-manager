@@ -155,3 +155,55 @@ button.danger.armed {
   border-top: 1px solid #333;
   padding-top: 12px;
 }
+
+.terminal-status-overlay {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: #ddd;
+  background: rgba(40, 40, 40, 0.85);
+  border: 1px solid #444;
+  pointer-events: none;
+}
+
+.terminal-status-overlay.failed {
+  background: rgba(90, 32, 32, 0.9);
+  border-color: #7a2a2a;
+}
+
+/* Mobile: the sidebar is wide enough to eat most of a phone screen, so
+   below this width it becomes an overlay toggled by a hamburger button
+   instead of taking up permanent flex space. No-op above the breakpoint —
+   .sidebar-wrapper's default (non-mobile) layout is just a plain flex child,
+   set below. */
+.sidebar-toggle {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .sidebar-toggle {
+    display: block;
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    z-index: 20;
+  }
+
+  .sidebar-wrapper {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100%;
+    z-index: 15;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: 2px 0 12px rgba(0, 0, 0, 0.5);
+  }
+
+  .sidebar-wrapper.open {
+    transform: translateX(0);
+  }
+}

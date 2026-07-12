@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { DockviewReact } from "dockview-react";
 import type { DockviewApi, DockviewReadyEvent, IDockviewPanelProps } from "dockview-react";
 import "dockview-react/dist/styles/dockview.css";
@@ -20,6 +20,9 @@ const components = {
 
 export function App() {
   const dockviewApi = useRef<DockviewApi | null>(null);
+  // Only meaningful below the mobile breakpoint (see styles.css) — a no-op
+  // on desktop, where .sidebar-wrapper ignores this class entirely.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const onReady = useCallback((event: DockviewReadyEvent) => {
     dockviewApi.current = event.api;
@@ -33,15 +36,15 @@ export function App() {
     const existing = api.getPanel(panelId);
     if (existing) {
       existing.api.setActive();
-      return;
+    } else {
+      api.addPanel({
+        id: panelId,
+        component: "terminal",
+        title: session.name || session.command,
+        params: { sessionId: session.id },
+      });
     }
-
-    api.addPanel({
-      id: panelId,
-      component: "terminal",
-      title: session.name || session.command,
-      params: { sessionId: session.id },
-    });
+    setSidebarOpen(false);
   }, []);
 
   // A session ended via the sidebar's explicit "end session" action (as
@@ -54,7 +57,12 @@ export function App() {
 
   return (
     <div className="app">
-      <Sidebar onOpenSession={onOpenSession} onSessionEnded={onSessionEnded} />
+      <button className="sidebar-toggle" onClick={() => setSidebarOpen((v) => !v)}>
+        ☰
+      </button>
+      <div className={`sidebar-wrapper${sidebarOpen ? " open" : ""}`}>
+        <Sidebar onOpenSession={onOpenSession} onSessionEnded={onSessionEnded} />
+      </div>
       <div className="dockview-container">
         <DockviewReact
           className="dockview-theme-dark"

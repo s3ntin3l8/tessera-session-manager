@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -17,6 +17,30 @@ interface ResizeMessage {
   rows: number;
 }
 
+type ConnectionStatus = "connecting" | "open" | "reconnecting" | "failed";
+
+const MAX_RECONNECT_ATTEMPTS = 6;
+const RECONNECT_BASE_DELAY_MS = 500;
+const RECONNECT_MAX_DELAY_MS = 8000;
+
+// Terminal-relevant Ctrl combos that browsers would otherwise intercept
+// before they ever reach xterm — Ctrl+R (readline reverse-search, extremely
+// common) collides with page refresh, Ctrl+L (clear screen) and Ctrl+K
+// (kill-line) collide with address-bar-focus in some browsers. Browsers
+// reserve some other combos (Ctrl+W/T/N — close/open tab, new window) at a
+// level JS categorically cannot override; deliberately not attempted here
+// since preventDefault() on those is a silent no-op anyway.
+const TERMINAL_RESERVED_KEYS = new Set(["r", "l", "k"]);
+
+function attachKeyConflictHandler(term: Terminal): void {
+  term.attachCustomKeyEventHandler((event) => {
+    if (event.type === "keydown" && event.ctrlKey && TERMINAL_RESERVED_KEYS.has(event.key.toLowerCase())) {
+      event.preventDefault();
+    }
+    return true;
+  });
+}
+
 // One xterm.js instance + one WebSocket per session, bound to a session id
 // (not to the panel's own lifetime) — closing this panel only tears down the
 // browser-side view; the WS close handler in terminal.ts explicitly does not
@@ -24,6 +48,7 @@ interface ResizeMessage {
 // premise from the plan.
 export function TerminalPane(props: IDockviewPanelProps<TerminalPaneParams>) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [status, setStatus] = useState<ConnectionStatus>("connecting");
 
   useEffect(() => {
     const container = containerRef.current;
@@ -43,6 +68,7 @@ export function TerminalPane(props: IDockviewPanelProps<TerminalPaneParams>) {
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = "11";
     term.loadAddon(new WebLinksAddon());
+    attachKeyConflictHandler(term);
 
     try {
       term.loadAddon(new WebglAddon());
@@ -56,43 +82,99 @@ export function TerminalPane(props: IDockviewPanelProps<TerminalPaneParams>) {
     term.open(container);
     fitAddon.fit();
 
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${location.host}/ws/terminal?sessionId=${props.params.sessionId}&cols=${term.cols}&rows=${term.rows}`;
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = "arraybuffer";
-
-    ws.addEventListener("message", (event) => {
-      if (typeof event.data === "string") return;
-      term.write(new Uint8Array(event.data as ArrayBuffer));
-    });
+    let destroyed = false;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempt = 0;
 
     const dataSub = term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (ws?.readyState === WebSocket.OPEN) {
         ws.send(new TextEncoder().encode(data));
       }
     });
 
     let lastCols = term.cols;
     let lastRows = term.rows;
+    const sendResizeIfOpen = () => {
+      if (ws?.readyState === WebSocket.OPEN) {
+        const message: ResizeMessage = { type: "resize", cols: term.cols, rows: term.rows };
+        ws.send(JSON.stringify(message));
+      }
+    };
     const resizeObserver = new ResizeObserver(() => {
       fitAddon.fit();
       if (term.cols === lastCols && term.rows === lastRows) return;
       lastCols = term.cols;
       lastRows = term.rows;
-      if (ws.readyState === WebSocket.OPEN) {
-        const message: ResizeMessage = { type: "resize", cols: term.cols, rows: term.rows };
-        ws.send(JSON.stringify(message));
-      }
+      sendResizeIfOpen();
     });
     resizeObserver.observe(container);
 
+    // Reconnects on any drop (network blip, backend redeploy, laptop sleep)
+    // with capped exponential backoff — up to MAX_RECONNECT_ATTEMPTS, then
+    // gives up and shows a "failed" state rather than retrying forever
+    // against a session that may genuinely be gone. A successful reconnect
+    // needs no special handling to restore output: the server always
+    // replays its scrollback buffer to a newly-attaching client (see
+    // terminal.ts), so the same catch-up path used for "reopen a detached
+    // panel" also covers "the WS silently dropped and came back."
+    function connect(): void {
+      if (destroyed) return;
+      setStatus(reconnectAttempt === 0 ? "connecting" : "reconnecting");
+
+      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${location.host}/ws/terminal?sessionId=${props.params.sessionId}&cols=${term.cols}&rows=${term.rows}`;
+      const socket = new WebSocket(wsUrl);
+      socket.binaryType = "arraybuffer";
+      ws = socket;
+
+      socket.addEventListener("open", () => {
+        reconnectAttempt = 0;
+        setStatus("open");
+      });
+
+      socket.addEventListener("message", (event) => {
+        if (typeof event.data === "string") return;
+        term.write(new Uint8Array(event.data as ArrayBuffer));
+      });
+
+      socket.addEventListener("close", () => {
+        if (destroyed) return;
+        if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+          setStatus("failed");
+          return;
+        }
+        const delay = Math.min(
+          RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempt,
+          RECONNECT_MAX_DELAY_MS,
+        );
+        reconnectAttempt += 1;
+        reconnectTimer = setTimeout(connect, delay);
+      });
+    }
+
+    connect();
+
     return () => {
+      destroyed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       resizeObserver.disconnect();
       dataSub.dispose();
-      ws.close();
+      ws?.close();
       term.dispose();
     };
   }, [props.params.sessionId]);
 
-  return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
+  return (
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      {status !== "open" && (
+        <div className={`terminal-status-overlay ${status}`}>
+          {status === "connecting" && "Connecting…"}
+          {status === "reconnecting" && "Reconnecting…"}
+          {status === "failed" && "Disconnected — could not reconnect"}
+        </div>
+      )}
+    </div>
+  );
 }
