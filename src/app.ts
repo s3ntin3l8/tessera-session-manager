@@ -13,6 +13,7 @@ import { usersRoute } from "./routes/users.js";
 import { terminalRoute } from "./routes/terminal.js";
 import { projectsRoute } from "./routes/projects.js";
 import { sessionsRoute } from "./routes/sessions.js";
+import { workspacesRoute } from "./routes/workspaces.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -35,6 +36,7 @@ export async function buildApp() {
   await app.register(usersRoute);
   await app.register(projectsRoute);
   await app.register(sessionsRoute);
+  await app.register(workspacesRoute);
   await app.register(terminalRoute);
 
   return app;

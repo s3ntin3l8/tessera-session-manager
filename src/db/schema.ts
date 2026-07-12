@@ -44,3 +44,18 @@ export const sessions = sqliteTable("sessions", {
     .$defaultFn(() => new Date()),
   lastAttachedAt: integer("last_attached_at", { mode: "timestamp" }),
 });
+
+// A workspace is a named, saved dockview layout — the cmux-style "tab" that
+// groups a whole split arrangement of terminals, not a single terminal. The
+// backend treats `layout` as an opaque JSON blob (dockview's own
+// api.toJSON()/fromJSON() shape, including each panel's params.sessionId) —
+// same philosophy as `sessions.command` being an opaque string. Nullable
+// because a freshly created workspace has no layout yet (empty dockview grid).
+export const workspaces = sqliteTable("workspaces", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  layout: text("layout"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});

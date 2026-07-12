@@ -17,6 +17,15 @@ export interface Session {
   subscriberCount: number;
 }
 
+export interface Workspace {
+  id: number;
+  name: string;
+  // Opaque dockview api.toJSON() blob — this client never inspects its
+  // shape either, just round-trips it through App.tsx's fromJSON()/toJSON().
+  layout: Record<string, unknown> | null;
+  createdAt: string;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -63,4 +72,27 @@ export const api = {
 
   deleteSession: (id: number) =>
     request<void>(`/api/sessions/${id}`, { method: "DELETE" }),
+
+  listWorkspaces: () => request<Workspace[]>("/api/workspaces"),
+
+  createWorkspace: (name: string) =>
+    request<Workspace>("/api/workspaces", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+
+  renameWorkspace: (id: number, name: string) =>
+    request<Workspace>(`/api/workspaces/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+
+  saveWorkspaceLayout: (id: number, layout: Record<string, unknown>) =>
+    request<Workspace>(`/api/workspaces/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ layout }),
+    }),
+
+  deleteWorkspace: (id: number) =>
+    request<void>(`/api/workspaces/${id}`, { method: "DELETE" }),
 };

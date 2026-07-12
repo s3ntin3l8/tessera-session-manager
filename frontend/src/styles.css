@@ -38,6 +38,81 @@ body {
   margin: 0 0 8px;
 }
 
+/* Stacked above .sidebar (structurally identical: same width/background,
+   distinct border so the two orthogonal sections — "which layout" vs. "which
+   sessions exist" — read as separate blocks, not one merged list). */
+.workspace-switcher {
+  width: 260px;
+  flex-shrink: 0;
+  background: #202020;
+  border-bottom: 1px solid #333;
+  padding: 12px;
+}
+
+.workspace-switcher-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.workspace-switcher-header h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #888;
+  margin: 0;
+}
+
+.workspace-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.workspace-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.workspace-open {
+  flex: 1;
+  text-align: left;
+  background: none;
+  border: none;
+  color: #ccc;
+  cursor: pointer;
+  padding: 3px 4px;
+  border-radius: 3px;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-open:hover {
+  background: #2c2c2c;
+}
+
+.workspace-item.active .workspace-open {
+  background: #2c3e50;
+  color: #fff;
+  font-weight: 600;
+}
+
+.workspace-rename-input {
+  flex: 1;
+  background: #151515;
+  border: 1px solid #333;
+  color: #ddd;
+  padding: 3px 4px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
 .dockview-container {
   flex: 1;
   min-width: 0;
@@ -174,11 +249,20 @@ button.danger.armed {
   border-color: #7a2a2a;
 }
 
+/* Holds the two orthogonal sidebar sections (WorkspaceSwitcher, then
+   Sidebar) stacked in a column — same background as .sidebar so the seam
+   between them doesn't show as two different shades. */
+.sidebar-wrapper {
+  display: flex;
+  flex-direction: column;
+  background: #202020;
+  flex-shrink: 0;
+}
+
 /* Mobile: the sidebar is wide enough to eat most of a phone screen, so
    below this width it becomes an overlay toggled by a hamburger button
    instead of taking up permanent flex space. No-op above the breakpoint —
-   .sidebar-wrapper's default (non-mobile) layout is just a plain flex child,
-   set below. */
+   the rule above is .sidebar-wrapper's default (non-mobile) layout. */
 .sidebar-toggle {
   display: none;
 }
