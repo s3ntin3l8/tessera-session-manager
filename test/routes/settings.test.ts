@@ -104,4 +104,41 @@ describe("settings route", () => {
     expect(res.statusCode).toBe(400);
     await app.close();
   });
+
+  it("falls back to the default reconcile interval instead of persisting a busy-loop value", async () => {
+    const app = await buildApp();
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/api/settings",
+      payload: { sessions: { reconcileIntervalSeconds: 0 } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().sessions.reconcileIntervalSeconds).toBe(
+      DEFAULT_SETTINGS.sessions.reconcileIntervalSeconds,
+    );
+
+    const fetched = await app.inject({ method: "GET", url: "/api/settings" });
+    expect(fetched.json().sessions.reconcileIntervalSeconds).toBe(
+      DEFAULT_SETTINGS.sessions.reconcileIntervalSeconds,
+    );
+
+    await app.close();
+  });
+
+  it("falls back to the default idle threshold when patched with a non-number", async () => {
+    const app = await buildApp();
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/api/settings",
+      payload: { notifications: { idleThresholdSeconds: "soon" } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().notifications.idleThresholdSeconds).toBe(
+      DEFAULT_SETTINGS.notifications.idleThresholdSeconds,
+    );
+
+    await app.close();
+  });
 });

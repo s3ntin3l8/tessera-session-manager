@@ -10,6 +10,7 @@ import type {
   Workspace,
 } from "./api.js";
 import type { PositionUpdate, ReorderUpdate } from "./reorder.js";
+import { deepMerge, mergePartialPatch } from "./settingsMerge.js";
 
 // Which workspace was last active survives a reload via localStorage (not
 // the DB — it's a per-browser UI preference, not shared server state).
@@ -204,25 +205,6 @@ interface DashboardState {
   // of the time. Returns a cleanup function; called once from App.tsx
   // alongside startLiveRefresh.
   startThemeWatch: () => () => void;
-}
-
-// Plain-object-aware deep merge mirroring src/services/settings.ts's
-// backend copy — arrays and non-plain-object values replace outright
-// rather than merging element-wise (a `projectRoots: []` patch must empty
-// the list, not no-op against the current value).
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function deepMerge<T>(base: T, patch: unknown): T {
-  if (!isPlainObject(patch)) return base;
-  const result: Record<string, unknown> = { ...(base as Record<string, unknown>) };
-  for (const [key, value] of Object.entries(patch)) {
-    const baseValue = (base as Record<string, unknown>)[key];
-    result[key] =
-      isPlainObject(baseValue) && isPlainObject(value) ? deepMerge(baseValue, value) : value;
-  }
-  return result as T;
 }
 
 // How long to wait after the last updateSettings() call before firing the
@@ -427,7 +409,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
       const next = deepMerge(get().settings, patch);
       applySettings(next);
 
-      pendingPatch = pendingPatch ? deepMerge(pendingPatch, patch) : patch;
+      pendingPatch = pendingPatch ? mergePartialPatch(pendingPatch, patch) : patch;
       if (patchTimer) clearTimeout(patchTimer);
       patchTimer = setTimeout(flushPendingPatch, SETTINGS_PATCH_DEBOUNCE_MS);
     },

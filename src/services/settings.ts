@@ -126,6 +126,22 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// A patch leaf only ever replaces a base leaf of the same JS type — a
+// `{"terminal":{"fontSize":"huge"}}` or `{"terminal":5}` patch must not
+// persist and silently corrupt a field/subtree forever (getStoredSettings
+// re-merges the stored blob over DEFAULT_SETTINGS with this same function on
+// every read, so a wrong-shape value, once written, never self-heals).
+// Reached only when at least one side isn't a plain object (deepMerge
+// recurses instead when both are), so an object-vs-anything-else mismatch is
+// always rejected here.
+function sameType(base: unknown, value: unknown): boolean {
+  if (isPlainObject(base) || isPlainObject(value)) return false;
+  if (Array.isArray(base)) return Array.isArray(value);
+  if (Array.isArray(value)) return false;
+  if (base === null || value === null) return false;
+  return typeof base === typeof value;
+}
+
 // Iterates `base`'s own keys rather than the patch's: the property name
 // written to `result` must never be sourced from request.body (an
 // attacker-controlled PATCH /api/settings payload), since JSON.parse
@@ -143,18 +159,82 @@ export function deepMerge<T>(base: T, patch: unknown): T {
     const baseValue = baseObj[key];
     const value = patch[key];
     result[key] =
-      isPlainObject(baseValue) && isPlainObject(value) ? deepMerge(baseValue, value) : value;
+      isPlainObject(baseValue) && isPlainObject(value)
+        ? deepMerge(baseValue, value)
+        : sameType(baseValue, value)
+          ? value
+          : baseValue;
   }
   return result as T;
 }
 
+function safeNumber(
+  value: unknown,
+  { min, max, fallback }: { min: number; max: number; fallback: number },
+): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max
+    ? value
+    : fallback;
+}
+
+// Clamps/repairs numeric fields to a sane range, falling back to the
+// default on anything non-finite or out of bounds. The type guard in
+// deepMerge above only proves a patched leaf is *a* number, not a *sane*
+// one — a 0 or negative `reconcileIntervalSeconds` feeds straight into
+// `setInterval` (see plugins/pty.ts's armReconcileTimer). Ranges mirror the
+// min/max the Settings UI's own sliders/number fields already enforce
+// client-side (Settings.tsx), so the server never rejects a value the UI
+// allows.
+export function sanitizeSettings(settings: AppSettings): AppSettings {
+  return {
+    ...settings,
+    terminal: {
+      ...settings.terminal,
+      fontSize: safeNumber(settings.terminal.fontSize, {
+        min: 10,
+        max: 20,
+        fallback: DEFAULT_SETTINGS.terminal.fontSize,
+      }),
+      scrollback: safeNumber(settings.terminal.scrollback, {
+        min: 100,
+        max: 100000,
+        fallback: DEFAULT_SETTINGS.terminal.scrollback,
+      }),
+      reconnect: {
+        ...settings.terminal.reconnect,
+        maxAttempts: safeNumber(settings.terminal.reconnect.maxAttempts, {
+          min: 1,
+          max: 20,
+          fallback: DEFAULT_SETTINGS.terminal.reconnect.maxAttempts,
+        }),
+      },
+    },
+    notifications: {
+      ...settings.notifications,
+      idleThresholdSeconds: safeNumber(settings.notifications.idleThresholdSeconds, {
+        min: 5,
+        max: 120,
+        fallback: DEFAULT_SETTINGS.notifications.idleThresholdSeconds,
+      }),
+    },
+    sessions: {
+      ...settings.sessions,
+      reconcileIntervalSeconds: safeNumber(settings.sessions.reconcileIntervalSeconds, {
+        min: 5,
+        max: 3600,
+        fallback: DEFAULT_SETTINGS.sessions.reconcileIntervalSeconds,
+      }),
+    },
+  };
+}
+
 /** Deep-merges a possibly-partial/older stored blob over the current defaults. */
 export function mergeSettings(stored: unknown): AppSettings {
-  return deepMerge(DEFAULT_SETTINGS, stored);
+  return sanitizeSettings(deepMerge(DEFAULT_SETTINGS, stored));
 }
 
 // Singleton row id — see db/schema.ts's `settings` table doc comment.
-const SETTINGS_ROW_ID = 1;
+export const SETTINGS_ROW_ID = 1;
 
 // Shared "read the settings row and merge over defaults" used by every
 // consumer (the settings route itself, project-roots resolution, the

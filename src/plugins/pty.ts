@@ -1,8 +1,11 @@
 import fp from "fastify-plugin";
 import type { FastifyInstance } from "fastify";
-import { getStoredSettings } from "../services/settings.js";
+import { DEFAULT_SETTINGS, getStoredSettings } from "../services/settings.js";
 import { PtyManager } from "../services/pty-manager.js";
 import { reconcileExitedSessions } from "../services/session-reconciler.js";
+
+const DEFAULT_RECONCILE_INTERVAL_MS = DEFAULT_SETTINGS.sessions.reconcileIntervalSeconds * 1000;
+const MIN_RECONCILE_INTERVAL_MS = 1000;
 
 function readReconcileIntervalMs(app: FastifyInstance): number {
   return getStoredSettings(app.db).sessions.reconcileIntervalSeconds * 1000;
@@ -24,6 +27,14 @@ export const ptyPlugin = fp(async (app: FastifyInstance) => {
   // immediately rather than only after a process restart.
   function armReconcileTimer(intervalMs: number) {
     if (reconcileTimer) clearInterval(reconcileTimer);
+    // Defense-in-depth floor: services/settings.ts's sanitizeSettings
+    // already keeps a persisted reconcileIntervalSeconds sane, but a
+    // non-finite or sub-second value here would otherwise reach
+    // setInterval directly — 0/NaN coerces to a ~1ms busy-loop.
+    const safeIntervalMs =
+      Number.isFinite(intervalMs) && intervalMs >= MIN_RECONCILE_INTERVAL_MS
+        ? intervalMs
+        : DEFAULT_RECONCILE_INTERVAL_MS;
     // unref() so this timer alone never keeps the process (or, in tests, a
     // fastify instance that's about to be closed) alive — reconciliation is
     // opportunistic housekeeping, not core request-serving work.
@@ -31,7 +42,7 @@ export const ptyPlugin = fp(async (app: FastifyInstance) => {
       reconcileExitedSessions(app).catch((err) => {
         app.log.error({ err }, "session reconciliation failed");
       });
-    }, intervalMs);
+    }, safeIntervalMs);
     reconcileTimer.unref();
   }
 
