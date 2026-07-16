@@ -95,6 +95,17 @@ Codecov.
 > repo onboarded on [codecov.io](https://about.codecov.io/) before results/badges
 > show. The workflow runs the upload unconditionally; it just no-ops without the token.
 
+## Git workflow
+
+**Never commit directly to `main`** — always branch and open a PR. This is
+enforced by GitHub branch protection on `main` (PR required, `test-node /
+lint-and-test` must pass, applies even to repo admins — no bypass), not just
+convention. Branch names are freeform (e.g. `fix/attention-false-positive`,
+`chore/prettier-hook`); the only naming rule that matters is the **PR title**
+needing a conventional-commit prefix (see below). Use
+[`.github/pull_request_template.md`](.github/pull_request_template.md)'s
+checklist before opening.
+
 ## Conventions
 
 - **ESM throughout** (`"type": "module"`); imports use `.js` specifiers even for `.ts`
