@@ -18,14 +18,18 @@ const patchSettingsSchema = {
 const SETTINGS_ROW_ID = 1;
 
 export async function settingsRoute(app: FastifyInstance) {
-  app.get("/api/settings", async () => {
+  app.get("/api/settings", async (_request, reply) => {
+    // Explicit content-type: this is a JSON API response, not an HTML
+    // page — settings values (e.g. a stored session-name pattern) must
+    // never be interpreted as markup by a client.
+    reply.type("application/json");
     return getStoredSettings(app.db);
   });
 
   app.patch<{ Body: Record<string, unknown> }>(
     "/api/settings",
     { schema: patchSettingsSchema },
-    async (request) => {
+    async (request, reply) => {
       // Merge the partial patch onto the *current* stored settings (already
       // fully-defaulted by getStoredSettings) — deepMerge is the same helper
       // mergeSettings uses to layer a stored blob over DEFAULT_SETTINGS.
@@ -47,6 +51,10 @@ export async function settingsRoute(app: FastifyInstance) {
         app.reconfigureReconciler(next.sessions.reconcileIntervalSeconds);
       }
 
+      // Explicit content-type — see the GET handler's comment above; the
+      // response body echoes patch-supplied string fields (e.g. theme,
+      // sessions.namePattern) straight back to the caller.
+      reply.type("application/json");
       return next;
     },
   );

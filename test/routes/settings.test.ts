@@ -24,6 +24,7 @@ describe("settings route", () => {
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/settings" });
     expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/^application\/json/);
     expect(res.json()).toEqual(DEFAULT_SETTINGS);
     await app.close();
   });
@@ -37,6 +38,7 @@ describe("settings route", () => {
       payload: { terminal: { fontSize: 18 } },
     });
     expect(patched.statusCode).toBe(200);
+    expect(patched.headers["content-type"]).toMatch(/^application\/json/);
     const body = patched.json();
     expect(body.terminal.fontSize).toBe(18);
     // Siblings of fontSize inside terminal must survive untouched.
