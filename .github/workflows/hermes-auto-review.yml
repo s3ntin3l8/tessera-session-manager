@@ -23,6 +23,6 @@ jobs:
       checks: write
     uses: s3ntin3l8/.github/.github/workflows/hermes-review.yml@main
     with:
-      mode: auto                      # review on trigger, no @mention needed
+      mode: auto # review on trigger, no @mention needed
       mention-trigger: s3ntin3l8-hermes
     secrets: inherit # pragma: allowlist secret
