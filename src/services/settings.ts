@@ -126,18 +126,22 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// JSON.parse builds "__proto__"/"constructor"/"prototype" as ordinary own
-// enumerable keys (it bypasses the __proto__ accessor), so a PATCH body is
-// an attacker-controlled Object.entries() source — skip these to prevent
-// prototype pollution via the merge below.
-const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-
+// Iterates `base`'s own keys rather than the patch's: the property name
+// written to `result` must never be sourced from request.body (an
+// attacker-controlled PATCH /api/settings payload), since JSON.parse
+// happily builds "__proto__" as an ordinary own-enumerable key and a
+// naive `for (const key of Object.keys(patch))` would let that key reach
+// a bracket-notation write — a prototype-pollution vector. Keys present in
+// the patch but absent from `base` (i.e. not part of the known settings
+// shape) are silently dropped rather than merged in.
 export function deepMerge<T>(base: T, patch: unknown): T {
   if (!isPlainObject(patch)) return base;
-  const result: Record<string, unknown> = { ...(base as Record<string, unknown>) };
-  for (const [key, value] of Object.entries(patch)) {
-    if (FORBIDDEN_KEYS.has(key)) continue;
-    const baseValue = (base as Record<string, unknown>)[key];
+  const baseObj = base as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...baseObj };
+  for (const key of Object.keys(baseObj)) {
+    if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
+    const baseValue = baseObj[key];
+    const value = patch[key];
     result[key] =
       isPlainObject(baseValue) && isPlainObject(value) ? deepMerge(baseValue, value) : value;
   }
