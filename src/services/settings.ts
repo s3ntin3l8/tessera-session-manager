@@ -126,10 +126,17 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// JSON.parse builds "__proto__"/"constructor"/"prototype" as ordinary own
+// enumerable keys (it bypasses the __proto__ accessor), so a PATCH body is
+// an attacker-controlled Object.entries() source — skip these to prevent
+// prototype pollution via the merge below.
+const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 export function deepMerge<T>(base: T, patch: unknown): T {
   if (!isPlainObject(patch)) return base;
   const result: Record<string, unknown> = { ...(base as Record<string, unknown>) };
   for (const [key, value] of Object.entries(patch)) {
+    if (FORBIDDEN_KEYS.has(key)) continue;
     const baseValue = (base as Record<string, unknown>)[key];
     result[key] =
       isPlainObject(baseValue) && isPlainObject(value) ? deepMerge(baseValue, value) : value;
