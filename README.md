@@ -26,15 +26,21 @@ CI/CD. Frontend: React + [dockview](https://dockview.dev/) (tiled splits/tabs)
   command-palette launcher with official CLI logos, project discovery, a
   per-project dock, and session status signals (exited detection,
   activity/attention) so you always know what's running and what needs you.
+- **Multi-host.** Run sessions on more than one machine from a single
+  dashboard — every other machine runs the same Tessera build, just started
+  as an `agent` instead of the `primary`. See
+  [`docs/multi-host.md`](docs/multi-host.md) for setup.
 
 > **Status:** the backend is feature-complete for projects, durable sessions,
 > named/grouped workspace layouts, project discovery, unified launchers
-> (shell/agent/`.crs`-config actions), per-project dock controls, and session
-> status signals (exited detection, activity/attention). The frontend now
-> surfaces all of it — a tiled terminal UI (dockview splits/tabs), a
-> command-palette launcher with official CLI logos, workspace groups with
-> drag-to-reorder, a per-project dock, session status badges, and a Settings
-> panel — and is under active polish, not frozen. Not yet built: a
+> (shell/agent/`.crs`-config actions), per-project dock controls, session
+> status signals (exited detection, activity/attention), and multi-host
+> session routing (see [`docs/multi-host.md`](docs/multi-host.md)). The
+> frontend now surfaces all of it — a tiled terminal UI (dockview
+> splits/tabs), a command-palette launcher with official CLI logos,
+> workspace groups with drag-to-reorder, a per-project dock, session status
+> badges, and a Settings panel (including host management) — and is under
+> active polish, not frozen. Not yet built: a
 > browser/webview pane (deferred — mixed-content blocker) and any in-app
 > auth (access is delegated to the external Traefik + Authentik forwardAuth,
 > by design). Native deployment (systemd/Traefik/Authentik) is drafted under
@@ -79,37 +85,43 @@ curl localhost:3000/api/projects
   `workspaces` (named/grouped saved layouts), `groups` (workspace groups),
   `agents` (installed shell/AI-CLI detection), `actions` (global launcher
   presets), `server-info` (`GET /api/server-info`, read-only diagnostics for
-  Settings → Server info), `terminal` (`/ws/terminal` PTY bridge).
+  Settings → Server info), `terminal` (`/ws/terminal` PTY bridge), `hosts`
+  (remote-host registry for multi-host sessions), `internal` (an `agent`
+  process's token-gated API, called by a `primary`'s host routing).
 - `src/services/` — `pty-manager` (dtach/node-pty session lifecycle),
   `project-config` (layered `.crs/actions.json`/`dock.json` + `package.json`/
   `tasks.json` resolution), `agent-detect`, `attention-detect` (BEL/OSC
-  parsing), `session-reconciler`, `encryption` (AES-256-GCM), `date-utils`.
+  parsing), `session-reconciler`, `encryption` (AES-256-GCM), `date-utils`,
+  `host-registry`/`remote-host-client`/`session-backend` (multi-host routing
+  — see [`docs/multi-host.md`](docs/multi-host.md)).
 - `src/db/` — Drizzle schema, client, seed. Migrations live in `drizzle/`.
 - `frontend/` — standalone Vite + React + TypeScript app (own
   `package.json`/tsconfig/eslint); dockview-based tiled terminal UI.
 - `deploy/` — systemd `--user` unit + Traefik/Authentik config templates
   (not installed by anything in this repo — see `deploy/README.md`).
+- `docs/` — deep-dive docs for specific subsystems, e.g.
+  [`multi-host.md`](docs/multi-host.md).
 
 ## 🔧 Configuration
 
 All config is validated at startup by `@fastify/env` (see `src/plugins/env.ts`).
 
-| Variable              | Default              | Description                                                                                                                |
-| --------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`            | `development`        | `development` \| `production` \| `test`                                                                                    |
-| `PORT`                | `3000`               | HTTP listen port                                                                                                           |
-| `LOG_LEVEL`           | `info`               | pino log level                                                                                                             |
-| `DATABASE_URL`        | `file:./data/app.db` | SQLite `file:` URL                                                                                                         |
-| `DB_ENCRYPTION_KEY`   | _(empty)_            | base64url 32-byte key; enables encryption-at-rest                                                                          |
-| `CORS_ORIGIN`         | _(empty)_            | comma-separated allowlist; empty disables CORS                                                                             |
-| `RATE_LIMIT_MAX`      | `100`                | max requests per window                                                                                                    |
-| `RATE_LIMIT_WINDOW`   | `1 minute`           | rate-limit window                                                                                                          |
-| `SESSIONS_DIR`        | `./data/sessions`    | dir holding one dtach socket per terminal session                                                                          |
-| `FRONTEND_DIST`       | `./frontend/dist`    | built frontend assets; served at `/` once present                                                                          |
-| `PROJECTS_ROOTS`      | _(empty)_            | comma-separated dirs to scan for `GET /api/projects/discover`                                                              |
-| `CRS_CONFIG_DIR`      | `~/.config/crs`      | global launcher/dock config dir (a project's own `.crs/` wins)                                                             |
-| `TESSERA_ROLE`        | `primary`            | `primary` \| `agent` — multi-host support (issue #26, WIP); `agent` is a DB-less process that only runs PtyManager locally |
-| `TESSERA_AGENT_TOKEN` | _(empty)_            | shared secret an `agent` process's internal API will require; `agent` refuses to boot without one                          |
+| Variable              | Default              | Description                                                                                                                           |
+| --------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`            | `development`        | `development` \| `production` \| `test`                                                                                               |
+| `PORT`                | `3000`               | HTTP listen port                                                                                                                      |
+| `LOG_LEVEL`           | `info`               | pino log level                                                                                                                        |
+| `DATABASE_URL`        | `file:./data/app.db` | SQLite `file:` URL                                                                                                                    |
+| `DB_ENCRYPTION_KEY`   | _(empty)_            | base64url 32-byte key; enables encryption-at-rest                                                                                     |
+| `CORS_ORIGIN`         | _(empty)_            | comma-separated allowlist; empty disables CORS                                                                                        |
+| `RATE_LIMIT_MAX`      | `100`                | max requests per window                                                                                                               |
+| `RATE_LIMIT_WINDOW`   | `1 minute`           | rate-limit window                                                                                                                     |
+| `SESSIONS_DIR`        | `./data/sessions`    | dir holding one dtach socket per terminal session                                                                                     |
+| `FRONTEND_DIST`       | `./frontend/dist`    | built frontend assets; served at `/` once present                                                                                     |
+| `PROJECTS_ROOTS`      | _(empty)_            | comma-separated dirs to scan for `GET /api/projects/discover`                                                                         |
+| `CRS_CONFIG_DIR`      | `~/.config/crs`      | global launcher/dock config dir (a project's own `.crs/` wins)                                                                        |
+| `TESSERA_ROLE`        | `primary`            | `primary` \| `agent` — see [`docs/multi-host.md`](docs/multi-host.md); `agent` is a DB-less process that only runs PtyManager locally |
+| `TESSERA_AGENT_TOKEN` | _(empty)_            | shared secret an `agent` process's internal API requires on every request; `agent` refuses to boot without one                        |
 
 Generate an encryption key:
 
