@@ -133,4 +133,46 @@ describe("reconcileExitedSessions", () => {
 
     await app.close();
   });
+
+  describe("multi-host (issue #26)", () => {
+    it("skips an unreachable remote host's sessions entirely, never flipping them to exited", async () => {
+      const app = await buildApp();
+      // A local session, alive, alongside a remote one on an unreachable
+      // host — the whole point of this test is that the *local* group must
+      // still reconcile normally even while the remote group's host is
+      // down (grouped-by-host, one failure doesn't abort the other group).
+      const localSessionId = await createSession(app);
+      vi.spyOn(app.pty, "isMasterAlive").mockResolvedValue(true);
+
+      const badHost = await app.inject({
+        method: "POST",
+        url: "/api/hosts",
+        payload: { name: "goes-down", baseUrl: "http://127.0.0.1:1", token: "t" },
+      });
+      const remoteProject = await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        payload: { name: "remote-p", cwd: "/x", hostId: badHost.json().id },
+      });
+      const { sessions } = await import("../../src/db/schema.js");
+      const [remoteRow] = app.db
+        .insert(sessions)
+        .values({ projectId: remoteProject.json().id, command: "bash" })
+        .returning()
+        .all();
+
+      await reconcileExitedSessions(app);
+
+      const res = await app.inject({ method: "GET", url: "/api/sessions" });
+      const rows = res.json() as Array<{ id: number; status: string }>;
+      // Local session still reconciles (still active — its scope reports
+      // alive above), and the remote one is left untouched at "active"
+      // rather than being wrongly flipped to "exited" for a host that's
+      // merely unreachable right now.
+      expect(rows.find((s) => s.id === localSessionId)?.status).toBe("active");
+      expect(rows.find((s) => s.id === remoteRow.id)?.status).toBe("active");
+
+      await app.close();
+    });
+  });
 });
