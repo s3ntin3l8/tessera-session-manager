@@ -34,6 +34,9 @@ Also fill in the `CHANGEME` paths in `claude-remote-session.service`
 
 ## Optional: in-dashboard previews (issue #28)
 
+See also [`docs/browser-previews.md`](../docs/browser-previews.md) for the
+feature overview; this section covers only the production deploy side.
+
 `PREVIEW_BASE_HOST` (`.env.example`) turns on the browser pane's preview
 feature: a project's dev server, or an arbitrary external URL, opens
 in-dashboard at `preview-<slug>.<PREVIEW_BASE_HOST>`, one subdomain per
