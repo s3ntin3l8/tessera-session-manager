@@ -88,12 +88,36 @@ describe("hosts route (issue #26)", () => {
     await app.close();
   });
 
+  it("rejects an IPv4-mapped IPv6 literal pointed at IMDS/link-local (Hermes review, PR #34)", async () => {
+    const app = await buildApp();
+    for (const baseUrl of ["http://[::ffff:169.254.169.254]", "http://[::ffff:100.64.0.1]"]) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/hosts",
+        payload: { name: "ssrf-mapped-v6", baseUrl, token: "t" },
+      });
+      expect(res.statusCode).toBe(400);
+    }
+    await app.close();
+  });
+
   it("still allows a loopback baseUrl (admin-trust boundary, not a link-local block)", async () => {
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
       url: "/api/hosts",
       payload: { name: "loopback", baseUrl: "http://127.0.0.1:4001", token: "t" },
+    });
+    expect(res.statusCode).toBe(201);
+    await app.close();
+  });
+
+  it("still allows IPv6 loopback too, consistent with IPv4 loopback being allowed", async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/hosts",
+      payload: { name: "loopback-v6", baseUrl: "http://[::1]:4001", token: "t" },
     });
     expect(res.statusCode).toBe(201);
     await app.close();

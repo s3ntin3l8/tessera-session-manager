@@ -109,4 +109,45 @@ describe("proxyToRemoteAttach (issue #26, Hermes review PR #34)", () => {
     browserSocket.emit("message", Buffer.from("too early"), true);
     expect(upstream.sendSpy).not.toHaveBeenCalled();
   });
+
+  it("drops a browser message when the upstream's own send buffer is over the backpressure threshold (Hermes review, PR #34)", () => {
+    const browserSocket = new MockSocket();
+    browserSocket.readyState = MockSocket.OPEN;
+    const upstream = new MockSocket();
+    openAttachMock.mockReturnValue(upstream);
+
+    proxyToRemoteAttach(fakeApp(), browserSocket as unknown as WebSocket, "remote-host", OPTS);
+    upstream.open();
+    upstream.bufferedAmount = 4 * 1024 * 1024 + 1; // just over the 4MB cap
+
+    browserSocket.emit("message", Buffer.from("overflow"), true);
+    expect(upstream.sendSpy).not.toHaveBeenCalled();
+  });
+
+  it("closes the browser when the upstream errors before ever opening", () => {
+    const browserSocket = new MockSocket();
+    browserSocket.readyState = MockSocket.OPEN;
+    const upstream = new MockSocket();
+    openAttachMock.mockReturnValue(upstream);
+
+    proxyToRemoteAttach(fakeApp(), browserSocket as unknown as WebSocket, "remote-host", OPTS);
+    upstream.emit("error", new Error("connection reset"));
+
+    expect(browserSocket.closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the browser when the upstream closes before ever opening (Hermes review, PR #34)", () => {
+    const browserSocket = new MockSocket();
+    browserSocket.readyState = MockSocket.OPEN;
+    const upstream = new MockSocket();
+    openAttachMock.mockReturnValue(upstream);
+
+    proxyToRemoteAttach(fakeApp(), browserSocket as unknown as WebSocket, "remote-host", OPTS);
+    // A "close" with no preceding "error" — e.g. a clean TCP reset mid
+    // handshake — must still tear down the browser side, not just the
+    // "error"/"unexpected-response" cases.
+    upstream.emit("close");
+
+    expect(browserSocket.closeSpy).toHaveBeenCalledTimes(1);
+  });
 });

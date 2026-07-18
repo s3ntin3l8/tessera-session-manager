@@ -162,11 +162,27 @@ export function proxyToRemoteAttach(
   // "open" meant keystrokes typed during that window were silently dropped
   // (the forwarding check below already no-ops until upstream is OPEN), and
   // a browser tab closed before the upstream even opened never registered
-  // closeUpstream at all — leaking that connection.
+  // closeUpstream at all — leaking that connection. Same backpressure drop
+  // as the agent->browser direction below, applied to this direction too —
+  // a slow/misbehaving agent must not let this browser->agent buffer grow
+  // unbounded.
   browserSocket.on("message", (data, isBinary) => {
-    if (upstream.readyState === upstream.OPEN) upstream.send(data, { binary: isBinary });
+    if (upstream.readyState !== upstream.OPEN) return;
+    if (upstream.bufferedAmount > BACKPRESSURE_MAX_BUFFERED_BYTES) return;
+    upstream.send(data, { binary: isBinary });
   });
   browserSocket.on("close", closeUpstream);
+
+  // Also unconditional (not nested in "open"): if the upstream socket
+  // itself closes/errors before ever opening — a connection reset, the
+  // agent dropping mid-handshake — closeBrowser must still run. Only the
+  // "message" handler stays inside "open", since messages can't arrive
+  // before that anyway.
+  upstream.on("close", closeBrowser);
+  upstream.on("error", (err) => {
+    app.log.error({ err, hostId, sessionId: opts.id }, "remote terminal ws upstream error");
+    closeBrowser();
+  });
 
   upstream.once("open", () => {
     app.log.info({ hostId, sessionId: opts.id }, "remote terminal ws attached");
@@ -176,16 +192,6 @@ export function proxyToRemoteAttach(
       if (browserSocket.bufferedAmount > BACKPRESSURE_MAX_BUFFERED_BYTES) return;
       browserSocket.send(data, { binary: isBinary });
     });
-    upstream.on("close", closeBrowser);
-    upstream.on("error", (err) => {
-      app.log.error({ err, hostId, sessionId: opts.id }, "remote terminal ws upstream error");
-      closeBrowser();
-    });
-  });
-
-  upstream.once("error", (err) => {
-    app.log.error({ err, hostId, sessionId: opts.id }, "failed to open remote terminal attach");
-    closeBrowser();
   });
   upstream.once("unexpected-response", (_req, res) => {
     app.log.error(

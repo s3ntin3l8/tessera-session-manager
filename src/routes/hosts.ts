@@ -92,10 +92,31 @@ const IPV6_IMDS_FORMS = new Set([
   "fd00:ec2:0000:0000:0000:0000:0000:0254",
 ]);
 
+// An IPv4-mapped IPv6 literal ("::ffff:169.254.169.254") bypasses both the
+// IPv4 check (hostname is bracketed IPv6, not a bare dotted-quad) and the
+// link-local/IMDS regex/set above (neither matches this form) — a real
+// bypass of the whole guard, not just an edge case. Unwrap it to the
+// embedded IPv4 address and re-run the same IPv4 check on that. `URL`
+// normalizes the dotted-quad tail into two hex groups (e.g.
+// "::ffff:169.254.169.254" becomes "::ffff:a9fe:a9fe" — verified via
+// `new URL(...).hostname`), so match on the hex form, not the dotted one.
+const IPV4_MAPPED_IPV6_HEX = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i;
+
+function ipv4MappedToDottedQuad(addr: string): string | null {
+  const match = addr.match(IPV4_MAPPED_IPV6_HEX);
+  if (!match) return null;
+  const g1 = parseInt(match[1], 16);
+  const g2 = parseInt(match[2], 16);
+  return `${(g1 >> 8) & 0xff}.${g1 & 0xff}.${(g2 >> 8) & 0xff}.${g2 & 0xff}`;
+}
+
 function isBlockedIPv6(hostname: string): boolean {
   if (!hostname.startsWith("[") || !hostname.endsWith("]")) return false;
   const addr = hostname.slice(1, -1).toLowerCase();
-  return IPV6_LINK_LOCAL.test(addr) || IPV6_IMDS_FORMS.has(addr);
+  if (IPV6_LINK_LOCAL.test(addr) || IPV6_IMDS_FORMS.has(addr)) return true;
+  const mappedV4 = ipv4MappedToDottedQuad(addr);
+  if (mappedV4 && isLinkLocalOrSharedNatIPv4(mappedV4)) return true;
+  return false;
 }
 
 function isValidHttpUrl(value: string): boolean {
