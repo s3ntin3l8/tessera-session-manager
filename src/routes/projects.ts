@@ -106,7 +106,7 @@ function resolveProjectRoots(app: FastifyInstance): string[] {
 }
 
 export async function projectsRoute(app: FastifyInstance) {
-  // detectedDevServerUrl is derived, not persisted (see dev-server-detect.ts):
+  // detectedDevServerPort is derived, not persisted (see dev-server-detect.ts):
   // a project's own devServerUrl column is the sole authoritative value, this
   // is only ever a suggestion the frontend may offer to pre-fill it with.
   // Batched as one extra query across every returned project's active dock
@@ -135,7 +135,7 @@ export async function projectsRoute(app: FastifyInstance) {
       // process, and a remote project's dock session lives in its owning
       // agent's own PtyManager instead — see dev-server-detect.ts's own
       // comment.
-      detectedDevServerUrl:
+      detectedDevServerPort:
         row.hostId === LOCAL_HOST_ID
           ? detectDevServerPortForSessionIds(app, dockSessionIdsByProject.get(row.id) ?? [])
           : null,

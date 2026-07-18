@@ -15,7 +15,7 @@ export interface Project {
   // print one), offered as a suggestion only. Never overrides devServerUrl;
   // null whenever nothing was detected (no dock session, no banner yet, or
   // a remote-hosted project — see dev-server-detect.ts).
-  detectedDevServerUrl: string | null;
+  detectedDevServerPort: string | null;
   createdAt: string;
 }
 

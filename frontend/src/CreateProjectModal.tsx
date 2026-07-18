@@ -33,7 +33,7 @@ interface CreateProjectModalProps {
   // suggestion (see the button below); never written into `devServerUrl`
   // without the user clicking it, even when this prop changes underneath
   // an already-open modal.
-  detectedDevServerUrl?: string | null;
+  detectedDevServerPort?: string | null;
   // Registered hosts (issue #26) — the selector only renders in "create"
   // mode, and only once a remote host actually exists, so a single-host
   // deployment sees no extra UI at all.
@@ -57,7 +57,7 @@ export function CreateProjectModal({
   initialName = "",
   initialPath = "",
   initialDevServerUrl = null,
-  detectedDevServerUrl = null,
+  detectedDevServerPort = null,
   hosts = [],
 }: CreateProjectModalProps) {
   const [path, setPath] = useState(initialPath);
@@ -198,17 +198,17 @@ export function CreateProjectModal({
               {/* Derived at render time, not stored in state — a pure
                   comparison of two already-tracked values needs no effect,
                   and re-deriving on every render is what keeps this in sync
-                  if `detectedDevServerUrl` changes while the modal's open
+                  if `detectedDevServerPort` changes while the modal's open
                   (e.g. the dock session finishes starting up) without ever
                   touching `devServerUrl` itself. */}
-              {detectedDevServerUrl !== null &&
-                detectedDevServerUrl.trim() !== devServerUrl.trim() && (
+              {detectedDevServerPort !== null &&
+                detectedDevServerPort.trim() !== devServerUrl.trim() && (
                   <button
                     type="button"
                     className="create-modal-detected-devserver"
-                    onClick={() => setDevServerUrl(detectedDevServerUrl)}
+                    onClick={() => setDevServerUrl(detectedDevServerPort)}
                   >
-                    Detected dev server on port {detectedDevServerUrl} — use it?
+                    Detected dev server on port {detectedDevServerPort} — use it?
                   </button>
                 )}
             </label>

@@ -15,7 +15,7 @@ describe("CreateProjectModal — detected dev-server port suggestion (issue #28 
         initialName="tessera"
         initialPath="/home/x/tessera"
         initialDevServerUrl={null}
-        detectedDevServerUrl="5173"
+        detectedDevServerPort="5173"
         onClose={vi.fn()}
         onCreate={vi.fn().mockResolvedValue(undefined)}
       />,
@@ -32,7 +32,7 @@ describe("CreateProjectModal — detected dev-server port suggestion (issue #28 
         initialName="tessera"
         initialPath="/home/x/tessera"
         initialDevServerUrl={null}
-        detectedDevServerUrl="5173"
+        detectedDevServerPort="5173"
         onClose={vi.fn()}
         onCreate={vi.fn().mockResolvedValue(undefined)}
       />,
@@ -51,7 +51,7 @@ describe("CreateProjectModal — detected dev-server port suggestion (issue #28 
         initialName="tessera"
         initialPath="/home/x/tessera"
         initialDevServerUrl="3000"
-        detectedDevServerUrl="5173"
+        detectedDevServerPort="5173"
         onClose={vi.fn()}
         onCreate={vi.fn().mockResolvedValue(undefined)}
       />,
@@ -70,7 +70,7 @@ describe("CreateProjectModal — detected dev-server port suggestion (issue #28 
         initialName="tessera"
         initialPath="/home/x/tessera"
         initialDevServerUrl={null}
-        detectedDevServerUrl={null}
+        detectedDevServerPort={null}
         onClose={vi.fn()}
         onCreate={vi.fn().mockResolvedValue(undefined)}
       />,
@@ -86,7 +86,7 @@ describe("CreateProjectModal — detected dev-server port suggestion (issue #28 
         initialName="tessera"
         initialPath="/home/x/tessera"
         initialDevServerUrl="5173"
-        detectedDevServerUrl="5173"
+        detectedDevServerPort="5173"
         onClose={vi.fn()}
         onCreate={vi.fn().mockResolvedValue(undefined)}
       />,
@@ -99,7 +99,7 @@ describe("CreateProjectModal — detected dev-server port suggestion (issue #28 
     render(
       <CreateProjectModal
         mode="create"
-        detectedDevServerUrl="5173"
+        detectedDevServerPort="5173"
         onClose={vi.fn()}
         onCreate={vi.fn().mockResolvedValue(undefined)}
       />,

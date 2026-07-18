@@ -19,7 +19,7 @@ const PROJECT: Project = {
   cwd: "/home/x/tessera",
   hostId: "local",
   devServerUrl: "5173",
-  detectedDevServerUrl: null,
+  detectedDevServerPort: null,
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
@@ -58,7 +58,7 @@ describe("BrowserPanel", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     useDashboardStore.setState({
-      projects: [{ ...PROJECT, devServerUrl: null, detectedDevServerUrl: "5173" }],
+      projects: [{ ...PROJECT, devServerUrl: null, detectedDevServerPort: "5173" }],
     });
 
     render(<BrowserPanel params={{ projectId: 1 }} />);

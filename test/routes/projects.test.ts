@@ -41,8 +41,8 @@ describe("projects route", () => {
     expect(listed.statusCode).toBe(200);
     expect(listed.json()).toHaveLength(1);
     // Always present, even with no dock session to detect from — see the
-    // "detectedDevServerUrl" describe block below for the detection cases.
-    expect(listed.json()[0].detectedDevServerUrl).toBeNull();
+    // "detectedDevServerPort" describe block below for the detection cases.
+    expect(listed.json()[0].detectedDevServerPort).toBeNull();
 
     await app.close();
   });
@@ -656,7 +656,7 @@ describe("projects route", () => {
     });
   });
 
-  describe("detectedDevServerUrl (issue #28 phase 7)", () => {
+  describe("detectedDevServerPort (issue #28 phase 7)", () => {
     it("is null for a project with an active dock session this process hasn't tracked in PtyManager", async () => {
       const app = await buildApp();
       const created = await app.inject({
@@ -675,7 +675,7 @@ describe("projects route", () => {
 
       const listed = await app.inject({ method: "GET", url: "/api/projects" });
       const project = listed.json().find((p: { id: number }) => p.id === projectId);
-      expect(project.detectedDevServerUrl).toBeNull();
+      expect(project.detectedDevServerPort).toBeNull();
 
       await app.close();
     });
@@ -699,7 +699,7 @@ describe("projects route", () => {
 
       const listed = await app.inject({ method: "GET", url: "/api/projects" });
       const project = listed.json().find((p: { id: number }) => p.id === projectId);
-      expect(project.detectedDevServerUrl).toBeNull();
+      expect(project.detectedDevServerPort).toBeNull();
 
       await app.close();
     });
@@ -728,7 +728,7 @@ describe("projects route", () => {
       // would have returned.
       const listed = await app.inject({ method: "GET", url: "/api/projects" });
       const project = listed.json().find((p: { id: number }) => p.id === projectId);
-      expect(project.detectedDevServerUrl).toBeNull();
+      expect(project.detectedDevServerPort).toBeNull();
 
       await app.close();
     });
