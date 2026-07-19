@@ -9,6 +9,20 @@ import { checkForUpdate, UpdateCheckError } from "../services/update-checker.js"
 // while an update is running — see scripts/self-update.sh's write_status().
 const IN_FLIGHT_PHASES = new Set(["downloading", "installing", "verifying", "restarting"]);
 
+// An in-flight status older than this is treated as abandoned, not a
+// genuinely running update — mirrors self-update.sh's own
+// STALE_LOCK_SECONDS. Without this, a status file left mid-phase by a
+// crashed/OOM-killed/rebooted host would 409 here forever: self-update.sh's
+// own staleness recovery (which clears its mkdir lock) never gets a chance
+// to run if this route refuses to spawn it in the first place (Hermes
+// review, PR #54).
+const STALE_STATUS_SECONDS = 1800;
+
+function isStale(status: UpdateStatus): boolean {
+  if (status.updatedAt === undefined) return true;
+  return Date.now() / 1000 - status.updatedAt > STALE_STATUS_SECONDS;
+}
+
 interface UpdateStatus {
   phase: string;
   version?: string;
@@ -34,28 +48,33 @@ function readStatus(tesseraHome: string): UpdateStatus {
 interface ApplyUpdateBody {
   version: string;
   assetUrl: string;
+  checksumUrl: string;
 }
 
-// version/assetUrl are exactly what the client already received from the
-// most recent GET /api/updates/check — apply doesn't re-hit GitHub itself,
-// both to avoid a second network round-trip and to avoid racing "latest
-// changed between check and apply" (the client applies what it showed the
-// user, not whatever happens to be newest a moment later).
+// version/assetUrl/checksumUrl are exactly what the client already received
+// from the most recent GET /api/updates/check — apply doesn't re-hit GitHub
+// itself, both to avoid a second network round-trip and to avoid racing
+// "latest changed between check and apply" (the client applies what it
+// showed the user, not whatever happens to be newest a moment later).
 const applyUpdateSchema = {
   body: {
     type: "object",
-    required: ["version", "assetUrl"],
+    required: ["version", "assetUrl", "checksumUrl"],
     additionalProperties: false,
     properties: {
       version: { type: "string", pattern: "^\\d+\\.\\d+\\.\\d+$" },
-      // Restricted to github.com, not just "https://" — this URL is handed
-      // straight to curl inside self-update.sh (running as this host user,
-      // with `npm ci` and a systemd unit restart downstream of it), so
-      // pinning it to GitHub's own release-asset host is cheap
+      // Restricted to github.com, not just "https://" — these URLs are
+      // handed straight to curl inside self-update.sh (running as this
+      // host user, with `npm ci` and a systemd unit restart downstream of
+      // it), so pinning them to GitHub's own release-asset host is cheap
       // defense-in-depth against a tampered/malicious body, even though a
       // dashboard user already has full host shell access via terminals in
-      // this app's threat model.
+      // this app's threat model. checksumUrl is required, not optional —
+      // self-update.sh verifies the tarball against it before extracting
+      // (Hermes review, PR #54: "no integrity verification of the
+      // downloaded tarball").
       assetUrl: { type: "string", pattern: "^https://github\\.com/" },
+      checksumUrl: { type: "string", pattern: "^https://github\\.com/" },
     },
   },
 };
@@ -122,13 +141,17 @@ export async function updatesRoute(app: FastifyInstance) {
       // lock (mkdir $TESSERA_HOME/.update.lock) as the real guard against
       // two concurrent applies racing each other — this check just avoids
       // spawning a doomed second process and gives the caller a clean 409
-      // instead of a spawn that immediately fails.
+      // instead of a spawn that immediately fails. A stale in-flight status
+      // (isStale — see above) does NOT block here: self-update.sh's own
+      // lock staleness recovery handles the actual concurrency guard, and
+      // this route refusing to even spawn it would be the thing that
+      // permanently bricks recovery after a crash.
       const current = readStatus(tesseraHome);
-      if (IN_FLIGHT_PHASES.has(current.phase)) {
+      if (IN_FLIGHT_PHASES.has(current.phase) && !isStale(current)) {
         return reply.conflict(`update already in progress (phase: ${current.phase})`);
       }
 
-      const { version, assetUrl } = request.body;
+      const { version, assetUrl, checksumUrl } = request.body;
       // Ships inside every release tarball — always invoke *this running
       // release's own* copy (current/scripts/self-update.sh), not some
       // other version's, so the update logic in flight matches the app
@@ -159,6 +182,7 @@ export async function updatesRoute(app: FastifyInstance) {
           scriptPath,
           version,
           assetUrl,
+          checksumUrl,
           tesseraHome,
           process.execPath,
         ],

@@ -212,6 +212,7 @@ export interface UpdateCheckResult {
   updateAvailable: boolean;
   releaseUrl: string | null;
   assetUrl: string | null;
+  checksumUrl: string | null;
   // Whether POST /api/updates/apply would even work — false on a dev
   // checkout (TESSERA_HOME unset), true on a versioned-release install.
   applyAvailable: boolean;
@@ -493,10 +494,10 @@ export const api = {
   getServerInfo: () => request<ServerInfo>("/api/server-info"),
   checkForUpdate: () => request<UpdateCheckResult>("/api/updates/check"),
   getUpdateStatus: () => request<UpdateStatus>("/api/updates/status"),
-  applyUpdate: (version: string, assetUrl: string) =>
+  applyUpdate: (version: string, assetUrl: string, checksumUrl: string) =>
     request<UpdateStatus>("/api/updates/apply", {
       method: "POST",
-      body: JSON.stringify({ version, assetUrl }),
+      body: JSON.stringify({ version, assetUrl, checksumUrl }),
     }),
 
   getSettings: () => request<AppSettings>("/api/settings"),

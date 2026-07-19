@@ -38,6 +38,12 @@ export interface UpdateCheckResult {
   // release has no such asset yet (e.g. CI's build-tarball job hasn't
   // finished, or an older release predates this feature).
   assetUrl: string | null;
+  // browser_download_url of the release's sha256sum-format checksum file
+  // (see release-please.yml's build-tarball job) — self-update.sh verifies
+  // the downloaded tarball against this before extracting it (Hermes
+  // review, PR #54: "no integrity verification of the downloaded tarball").
+  // null under the same conditions as assetUrl.
+  checksumUrl: string | null;
   // Whether this install is even capable of applying an update — i.e.
   // TESSERA_HOME is configured (a versioned-release layout, not a dev
   // checkout). Threaded in by the caller rather than read from process.env
@@ -101,6 +107,10 @@ function findTarballAsset(assets: GitHubReleaseAsset[] | undefined): GitHubRelea
   return assets?.find((a) => a.name.endsWith(".tgz")) ?? null;
 }
 
+function findChecksumAsset(assets: GitHubReleaseAsset[] | undefined): GitHubReleaseAsset | null {
+  return assets?.find((a) => a.name.endsWith(".sha256")) ?? null;
+}
+
 /**
  * Fetches the latest published GitHub Release for `repoSlug` ("owner/repo")
  * and compares its tag to `currentVersion`. Cached per repoSlug for
@@ -147,6 +157,7 @@ export async function checkForUpdate(
   const data = (await res.json()) as GitHubReleaseApiResponse;
   const latestVersion = data.tag_name?.replace(/^v/, "") ?? null;
   const asset = findTarballAsset(data.assets);
+  const checksumAsset = findChecksumAsset(data.assets);
 
   const result: UpdateCheckResult = {
     currentVersion,
@@ -154,6 +165,7 @@ export async function checkForUpdate(
     updateAvailable: latestVersion !== null && isNewer(latestVersion, currentVersion),
     releaseUrl: data.html_url ?? null,
     assetUrl: asset?.browser_download_url ?? null,
+    checksumUrl: checksumAsset?.browser_download_url ?? null,
     applyAvailable,
   };
 

@@ -1263,14 +1263,16 @@ function UpdatesSubsection() {
   }, [applying]);
 
   const apply = () => {
-    if (!check?.latestVersion || !check.assetUrl) return;
+    if (!check?.latestVersion || !check.assetUrl || !check.checksumUrl) return;
     setApplyError(null);
     setStatus({ phase: "downloading", version: check.latestVersion });
     setApplying(true);
-    api.applyUpdate(check.latestVersion, check.assetUrl).catch((err: unknown) => {
-      setApplying(false);
-      setApplyError(err instanceof ApiError ? err.message : "Could not start the update");
-    });
+    api
+      .applyUpdate(check.latestVersion, check.assetUrl, check.checksumUrl)
+      .catch((err: unknown) => {
+        setApplying(false);
+        setApplyError(err instanceof ApiError ? err.message : "Could not start the update");
+      });
   };
 
   return (
@@ -1297,7 +1299,13 @@ function UpdatesSubsection() {
               className={`settings-stat-value${check.updateAvailable ? " warn" : check.latestVersion ? " good" : ""}`}
             >
               {check.updateAvailable && <span className="settings-stat-value-dot warn" />}
-              {check.latestVersion ?? "unknown"}
+              {check.releaseUrl ? (
+                <a href={check.releaseUrl} target="_blank" rel="noreferrer">
+                  {check.latestVersion ?? "unknown"}
+                </a>
+              ) : (
+                (check.latestVersion ?? "unknown")
+              )}
             </div>
           </div>
         </div>
@@ -1314,7 +1322,10 @@ function UpdatesSubsection() {
       {check && check.applyAvailable && (
         <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10 }}>
           {check.updateAvailable ? (
-            <SecondaryButton onClick={apply} disabled={applying || !check.assetUrl}>
+            <SecondaryButton
+              onClick={apply}
+              disabled={applying || !check.assetUrl || !check.checksumUrl}
+            >
               {applying ? "Updating…" : "Update now"}
             </SecondaryButton>
           ) : (
@@ -1322,7 +1333,7 @@ function UpdatesSubsection() {
               Check again
             </SecondaryButton>
           )}
-          {check.updateAvailable && !check.assetUrl && (
+          {check.updateAvailable && (!check.assetUrl || !check.checksumUrl) && (
             <span className="settings-footer-note" style={{ marginTop: 0 }}>
               No installable release asset yet.
             </span>

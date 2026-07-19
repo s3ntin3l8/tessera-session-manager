@@ -28,7 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "==> Checking host prerequisites"
 missing=()
-for bin in node npm dtach systemd-run systemctl curl tar; do
+for bin in node npm dtach systemd-run systemctl curl tar timeout sha256sum; do
   command -v "$bin" >/dev/null 2>&1 || missing+=("$bin")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -40,6 +40,9 @@ fi
 
 NODE_PATH="$(command -v node)"
 echo "    node: $NODE_PATH ($("$NODE_PATH" --version))"
+
+# Matches self-update.sh's own NPM_CI_TIMEOUT_SECONDS.
+NPM_CI_TIMEOUT_SECONDS=600
 
 mkdir -p "$TESSERA_HOME_INPUT"
 TESSERA_HOME="$(cd "$TESSERA_HOME_INPUT" && pwd)"
@@ -54,8 +57,10 @@ VERSION="$(printf '%s' "$RELEASE_JSON" | "$NODE_PATH" -e \
   'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write((d.tag_name||"").replace(/^v/,""))')"
 ASSET_URL="$(printf '%s' "$RELEASE_JSON" | "$NODE_PATH" -e \
   'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));const a=(d.assets||[]).find(x=>x.name.endsWith(".tgz"));process.stdout.write(a?a.browser_download_url:"")')"
-if [ -z "$VERSION" ] || [ -z "$ASSET_URL" ]; then
-  echo "Could not find a .tgz release asset for $REPO's latest release." >&2
+CHECKSUM_URL="$(printf '%s' "$RELEASE_JSON" | "$NODE_PATH" -e \
+  'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));const a=(d.assets||[]).find(x=>x.name.endsWith(".sha256"));process.stdout.write(a?a.browser_download_url:"")')"
+if [ -z "$VERSION" ] || [ -z "$ASSET_URL" ] || [ -z "$CHECKSUM_URL" ]; then
+  echo "Could not find a .tgz release asset (and its .sha256 checksum) for $REPO's latest release." >&2
   echo "Has the release-please.yml build-tarball job run yet?" >&2
   exit 1
 fi
@@ -68,14 +73,21 @@ else
   echo "==> Downloading and installing $VERSION"
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "$TMP_DIR"' EXIT
-  curl -fsSL -o "$TMP_DIR/tessera-$VERSION.tgz" "$ASSET_URL"
+  TARBALL_NAME="tessera-$VERSION.tgz"
+  curl -fsSL -o "$TMP_DIR/$TARBALL_NAME" "$ASSET_URL"
+  curl -fsSL -o "$TMP_DIR/$TARBALL_NAME.sha256" "$CHECKSUM_URL"
+  # Same verification self-update.sh performs before every later update —
+  # see its own comment on why both files must share $TMP_DIR (Hermes
+  # review, PR #54).
+  (cd "$TMP_DIR" && sha256sum -c "$TARBALL_NAME.sha256") ||
+    { echo "checksum verification failed for $TARBALL_NAME" >&2; exit 1; }
   mkdir -p "$RELEASE_DIR"
-  tar -xzf "$TMP_DIR/tessera-$VERSION.tgz" -C "$RELEASE_DIR"
+  tar -xzf "$TMP_DIR/$TARBALL_NAME" -C "$RELEASE_DIR"
   # Same PATH fix self-update.sh applies — a bare `npm ci` needs `npm`
   # resolvable, which isn't guaranteed by every shell this script might run
   # under (though usually fine interactively, unlike the systemd unit).
   PATH="$(dirname "$NODE_PATH"):$PATH" \
-    bash -c "cd '$RELEASE_DIR' && npm ci --omit=dev"
+    bash -c "cd '$RELEASE_DIR' && timeout $NPM_CI_TIMEOUT_SECONDS npm ci --omit=dev"
 fi
 
 echo "==> Pointing current -> $VERSION"

@@ -30,6 +30,8 @@ function jsonResponse(status: number, body: unknown): Response {
 const tmpDb = path.join(os.tmpdir(), `updates-test-${process.pid}.db`);
 const VALID_ASSET_URL =
   "https://github.com/s3ntin3l8/tessera-session-manager/releases/download/v0.1.5/tessera-0.1.5.tgz";
+const VALID_CHECKSUM_URL =
+  "https://github.com/s3ntin3l8/tessera-session-manager/releases/download/v0.1.5/tessera-0.1.5.tgz.sha256";
 
 describe("updates route", () => {
   let tesseraHome: string;
@@ -84,12 +86,15 @@ describe("updates route", () => {
       await app.close();
     });
 
-    it("reports an available update from the latest release", async () => {
+    it("reports an available update from the latest release, including its checksum asset", async () => {
       fetchMock.mockResolvedValueOnce(
         jsonResponse(200, {
           tag_name: "v99.0.0",
           html_url: "https://github.com/x/y/releases/tag/v99.0.0",
-          assets: [{ name: "tessera-99.0.0.tgz", browser_download_url: VALID_ASSET_URL }],
+          assets: [
+            { name: "tessera-99.0.0.tgz", browser_download_url: VALID_ASSET_URL },
+            { name: "tessera-99.0.0.tgz.sha256", browser_download_url: VALID_CHECKSUM_URL },
+          ],
         }),
       );
       const app = await buildApp();
@@ -100,6 +105,7 @@ describe("updates route", () => {
         latestVersion: "99.0.0",
         updateAvailable: true,
         assetUrl: VALID_ASSET_URL,
+        checksumUrl: VALID_CHECKSUM_URL,
       });
       await app.close();
     });
@@ -157,7 +163,7 @@ describe("updates route", () => {
       const res = await app.inject({
         method: "POST",
         url: "/api/updates/apply",
-        payload: { version: "0.1.5", assetUrl: VALID_ASSET_URL },
+        payload: { version: "0.1.5", assetUrl: VALID_ASSET_URL, checksumUrl: VALID_CHECKSUM_URL },
       });
 
       expect(res.statusCode).toBe(400);
@@ -172,7 +178,11 @@ describe("updates route", () => {
       const res = await app.inject({
         method: "POST",
         url: "/api/updates/apply",
-        payload: { version: "not-a-version", assetUrl: VALID_ASSET_URL },
+        payload: {
+          version: "not-a-version",
+          assetUrl: VALID_ASSET_URL,
+          checksumUrl: VALID_CHECKSUM_URL,
+        },
       });
 
       expect(res.statusCode).toBe(400);
@@ -186,19 +196,37 @@ describe("updates route", () => {
       const res = await app.inject({
         method: "POST",
         url: "/api/updates/apply",
-        payload: { version: "0.1.5", assetUrl: "https://evil.example.com/payload.tgz" },
+        payload: {
+          version: "0.1.5",
+          assetUrl: "https://evil.example.com/payload.tgz",
+          checksumUrl: VALID_CHECKSUM_URL,
+        },
       });
 
       expect(res.statusCode).toBe(400);
       await app.close();
     });
 
-    it("refuses with 409 when an update is already in progress", async () => {
+    it("rejects a checksumUrl that isn't hosted on github.com", async () => {
       process.env.TESSERA_HOME = tesseraHome;
-      fs.writeFileSync(
-        path.join(tesseraHome, ".update-status.json"),
-        JSON.stringify({ phase: "installing", version: "0.1.4" }),
-      );
+      const app = await buildApp();
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/updates/apply",
+        payload: {
+          version: "0.1.5",
+          assetUrl: VALID_ASSET_URL,
+          checksumUrl: "https://evil.example.com/payload.tgz.sha256",
+        },
+      });
+
+      expect(res.statusCode).toBe(400);
+      await app.close();
+    });
+
+    it("rejects a body missing checksumUrl", async () => {
+      process.env.TESSERA_HOME = tesseraHome;
       const app = await buildApp();
 
       const res = await app.inject({
@@ -207,8 +235,59 @@ describe("updates route", () => {
         payload: { version: "0.1.5", assetUrl: VALID_ASSET_URL },
       });
 
+      expect(res.statusCode).toBe(400);
+      await app.close();
+    });
+
+    it("refuses with 409 when an update is already in progress (fresh status)", async () => {
+      process.env.TESSERA_HOME = tesseraHome;
+      fs.writeFileSync(
+        path.join(tesseraHome, ".update-status.json"),
+        JSON.stringify({
+          phase: "installing",
+          version: "0.1.4",
+          updatedAt: Math.floor(Date.now() / 1000),
+        }),
+      );
+      const app = await buildApp();
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/updates/apply",
+        payload: { version: "0.1.5", assetUrl: VALID_ASSET_URL, checksumUrl: VALID_CHECKSUM_URL },
+      });
+
       expect(res.statusCode).toBe(409);
       expect(spawnMock).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it("does NOT block on a stale in-flight status (crashed/rebooted host recovery)", async () => {
+      process.env.TESSERA_HOME = tesseraHome;
+      const scriptDir = path.join(tesseraHome, "current", "scripts");
+      fs.mkdirSync(scriptDir, { recursive: true });
+      fs.writeFileSync(path.join(scriptDir, "self-update.sh"), "#!/usr/bin/env bash\n");
+      // Left mid-phase by a process that never reached completion — e.g. a
+      // SIGKILL/OOM/host reboot during a prior update — older than
+      // STALE_STATUS_SECONDS (1800s). See Hermes review, PR #54.
+      fs.writeFileSync(
+        path.join(tesseraHome, ".update-status.json"),
+        JSON.stringify({
+          phase: "installing",
+          version: "0.1.4",
+          updatedAt: Math.floor(Date.now() / 1000) - 3600,
+        }),
+      );
+      const app = await buildApp();
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/updates/apply",
+        payload: { version: "0.1.5", assetUrl: VALID_ASSET_URL, checksumUrl: VALID_CHECKSUM_URL },
+      });
+
+      expect(res.statusCode).toBe(202);
+      expect(spawnMock).toHaveBeenCalledTimes(1);
       await app.close();
     });
 
@@ -221,7 +300,7 @@ describe("updates route", () => {
       const res = await app.inject({
         method: "POST",
         url: "/api/updates/apply",
-        payload: { version: "0.1.5", assetUrl: VALID_ASSET_URL },
+        payload: { version: "0.1.5", assetUrl: VALID_ASSET_URL, checksumUrl: VALID_CHECKSUM_URL },
       });
 
       expect(res.statusCode).toBe(500);
@@ -240,7 +319,7 @@ describe("updates route", () => {
       const res = await app.inject({
         method: "POST",
         url: "/api/updates/apply",
-        payload: { version: "0.1.5", assetUrl: VALID_ASSET_URL },
+        payload: { version: "0.1.5", assetUrl: VALID_ASSET_URL, checksumUrl: VALID_CHECKSUM_URL },
       });
 
       expect(res.statusCode).toBe(202);
@@ -259,6 +338,7 @@ describe("updates route", () => {
         scriptPath,
         "0.1.5",
         VALID_ASSET_URL,
+        VALID_CHECKSUM_URL,
         tesseraHome,
         process.execPath,
       ]);

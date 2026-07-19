@@ -119,6 +119,40 @@ describe("checkForUpdate", () => {
     expect(result.assetUrl).toBeNull();
   });
 
+  it("picks the .sha256 checksum asset among multiple release assets", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        tag_name: "v0.1.5",
+        assets: [
+          { name: "tessera-0.1.5.tgz", browser_download_url: "https://x/tessera-0.1.5.tgz" },
+          {
+            name: "tessera-0.1.5.tgz.sha256",
+            browser_download_url: "https://x/tessera-0.1.5.tgz.sha256",
+          },
+        ],
+      }),
+    );
+
+    const result = await checkForUpdate("owner/repo", "0.1.4", true);
+
+    expect(result.checksumUrl).toBe("https://x/tessera-0.1.5.tgz.sha256");
+  });
+
+  it("returns checksumUrl: null when no .sha256 asset is present", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        tag_name: "v0.1.5",
+        assets: [
+          { name: "tessera-0.1.5.tgz", browser_download_url: "https://x/tessera-0.1.5.tgz" },
+        ],
+      }),
+    );
+
+    const result = await checkForUpdate("owner/repo", "0.1.4", true);
+
+    expect(result.checksumUrl).toBeNull();
+  });
+
   it("passes applyAvailable through as given, independent of GitHub state", async () => {
     // mockImplementation (not mockResolvedValue) — a Response body can only
     // be read once, so each of the two checkForUpdate calls below needs its
