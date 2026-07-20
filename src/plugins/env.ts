@@ -84,6 +84,20 @@ const schema = {
       default: "primary",
       enum: ["primary", "agent"],
     },
+    // Signs/encrypts the session cookie src/plugins/auth.ts issues once
+    // TESSERA_AUTH_TOKEN (or, later, OIDC — issue #30) is configured. Empty
+    // by default, matching every other opt-in secret here — but unlike
+    // TESSERA_AUTH_TOKEN, an *enabled* in-process auth with no session
+    // secret is a real invariant violation (an unsigned cookie is
+    // forgeable), so src/app.ts refuses to boot in that combination rather
+    // than silently degrading, mirroring the TESSERA_AGENT_TOKEN boot check
+    // just above. Generate with `openssl rand -hex 32`; rotating it
+    // invalidates all existing sessions (a deliberate way to force
+    // re-login).
+    TESSERA_SESSION_SECRET: {
+      type: "string",
+      default: "",
+    },
     // Shared secret an "agent" role's internal API (src/routes/internal.ts)
     // requires on every request, including the /internal/ws/attach upgrade —
     // see src/app.ts's fail-closed boot check: role "agent" with an empty
@@ -97,6 +111,23 @@ const schema = {
     // `openssl rand -hex 32`), scope it per agent, and rotate it the same
     // way you would an SSH key with shell access to that box.
     TESSERA_AGENT_TOKEN: {
+      type: "string",
+      default: "",
+    },
+    // Optional in-process auth (issue #19) for the primary role: a single
+    // shared token/API key, checked via src/plugins/auth.ts's global
+    // onRequest gate against every HTTP route and the /ws/terminal upgrade
+    // (and, separately, previewProxyPlugin's own raw upgrade path — see that
+    // plugin's comments). Empty by default: in-process auth is opt-in and
+    // off, matching this app's existing "run behind an authenticating
+    // gateway" model — see deploy/README.md. Setting this (or, later,
+    // TESSERA_OIDC_ISSUER for issue #30) also requires
+    // TESSERA_SESSION_SECRET, since the login endpoint mints a signed
+    // session cookie for browser clients; a bearer Authorization header
+    // works either way for scripts/curl. Treat this the same as
+    // TESSERA_AGENT_TOKEN: real entropy (openssl rand -hex 32), not a
+    // memorable password.
+    TESSERA_AUTH_TOKEN: {
       type: "string",
       default: "",
     },
@@ -178,6 +209,8 @@ declare module "fastify" {
       CRS_CONFIG_DIR: string;
       TESSERA_ROLE: "primary" | "agent";
       TESSERA_AGENT_TOKEN: string;
+      TESSERA_AUTH_TOKEN: string;
+      TESSERA_SESSION_SECRET: string;
       GITHUB_OAUTH_CLIENT_ID: string;
       PREVIEW_BASE_HOST: string;
       TESSERA_HOME: string;

@@ -24,14 +24,16 @@ const patchSettingsSchema = {
   },
 };
 
-// No auth hook here, deliberately consistent with every other route in this
-// app (projects/sessions/workspaces/groups/agents/terminal) — none of them
-// authenticate either. The whole app assumes it's deployed behind an
-// authenticating reverse-proxy gateway (see deploy/README.md's Authentik
-// forward-auth templates), not that any individual route self-protects.
-// That's an app-wide gap for a bare (gateway-less) deployment, not something
-// specific to settings; tracked for an app-wide fix rather than bolted onto
-// this one route.
+// No *route-level* auth hook here, deliberately consistent with every other
+// route in this app (projects/sessions/workspaces/groups/agents/terminal) —
+// none of them self-protect individually. Two layers exist instead: the
+// operator can put an authenticating reverse-proxy gateway in front (see
+// deploy/README.md's Authentik forward-auth templates), and/or turn on this
+// process's own optional in-process auth (issue #19,
+// src/plugins/auth.ts) — a single global onRequest hook gating every
+// /api/* route (this one included) at once, rather than each route wiring
+// its own check. Both are opt-in; a bare deployment with neither configured
+// is still wide open, by design (see that plugin's own doc comment).
 export async function settingsRoute(app: FastifyInstance) {
   app.get("/api/settings", async (_request, reply) => {
     // Explicit content-type: this is a JSON API response, not an HTML

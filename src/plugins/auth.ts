@@ -1,0 +1,84 @@
+import fp from "fastify-plugin";
+import type { FastifyInstance } from "fastify";
+import fastifyCookie from "@fastify/cookie";
+import { buildPreviewHostPattern, isPreviewHost } from "../services/preview-host.js";
+import { isAuthEnabled, isRequestAuthenticated } from "../services/auth.js";
+
+// request.url includes the query string, and onRequest fires before
+// Fastify's own routing/query parsing runs — this is the cheapest correct
+// way to get just the pathname for the prefix check below. The
+// "http://placeholder" base is discarded immediately, the same throwaway-base
+// trick routes/internal.ts's resolveLoopbackPreviewUrl uses.
+function requestPathname(url: string): string {
+  return new URL(url, "http://placeholder").pathname;
+}
+
+// True for exactly the surface issue #19 asks to gate: every /api/* route
+// (except /api/auth/* itself — the login/me/logout endpoints obviously
+// can't require a session to reach them) and the /ws/terminal upgrade.
+// Static assets, "/", and "/health"/"/ready" stay reachable unauthenticated:
+// the SPA shell (including its own login view) has to load before it can
+// even call GET /api/auth/me, and health checks are infrastructure, not
+// product surface.
+function isProtectedPath(pathname: string): boolean {
+  if (pathname.startsWith("/api/auth/")) return false;
+  if (pathname.startsWith("/api/")) return true;
+  return pathname.startsWith("/ws/");
+}
+
+/**
+ * Optional in-process auth for the primary role (issue #19) — a single
+ * shared token, checked via a global onRequest hook that also covers the
+ * /ws/terminal upgrade (onRequest fires before that upgrade completes, the
+ * same guarantee routes/internal.ts's own token gate and terminal.ts's own
+ * preValidation hook rely on). Registered after dbPlugin, before
+ * previewProxyPlugin (see src/app.ts's comment at that call site) — that
+ * ordering is what lets this hook run, and potentially reject, before
+ * previewProxyPlugin's own onRequest hook gets a chance to proxy a
+ * preview-host HTTP request.
+ *
+ * Deliberately does NOT gate the preview-host surface itself (a Host header
+ * matching PREVIEW_BASE_HOST): a Lax, host-only session cookie cannot reach
+ * a cross-subdomain preview iframe (SameSite=Lax excludes cross-site
+ * subresource loads, and a host-only cookie is never sent to a different
+ * subdomain regardless of SameSite), and a browser <iframe> can't attach a
+ * Bearer header either — gating that surface with this mechanism would
+ * silently 401 every browser preview the moment auth is enabled, a
+ * regression hiding behind a config flag. Preview hosts stay exactly as
+ * protected as they are today: by whatever gateway forwardAuth the operator
+ * has in front (deploy/README.md already calls out that the preview router
+ * needs the same middleware as the main one — this isn't a new gap, just an
+ * unclosed one). A real fix — a short-lived, dashboard-minted preview-access
+ * token appended to the iframe URL, validated by preview-proxy.ts itself —
+ * is a follow-up, not this PR.
+ */
+export const authPlugin = fp(async (app: FastifyInstance) => {
+  // Registered purely for reply.setCookie()/clearCookie() serialization
+  // convenience in routes/auth.ts — signing itself is done by hand via
+  // services/auth.ts's createSessionCookieValue (@fastify/cookie's own
+  // `secret` option / signed:true path is unused, to keep exactly one
+  // signing mechanism in play).
+  await app.register(fastifyCookie);
+
+  if (!isAuthEnabled(app.config)) {
+    app.log.warn(
+      "no in-app auth configured (TESSERA_AUTH_TOKEN unset) — relying entirely on " +
+        "the network/reverse-proxy gateway for access control; see issue #19 and " +
+        "deploy/README.md",
+    );
+    return;
+  }
+
+  const previewBaseHost = app.config.PREVIEW_BASE_HOST.trim();
+  const previewHostPattern =
+    previewBaseHost !== "" ? buildPreviewHostPattern(previewBaseHost) : null;
+
+  app.addHook("onRequest", async (request, reply) => {
+    if (previewHostPattern && isPreviewHost(request.headers.host, previewHostPattern)) {
+      return; // preview subdomain — see this plugin's own doc comment on why
+    }
+    if (!isProtectedPath(requestPathname(request.url))) return;
+    if (isRequestAuthenticated(request.headers, app.config)) return;
+    return reply.unauthorized("authentication required");
+  });
+});

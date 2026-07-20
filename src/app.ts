@@ -6,10 +6,12 @@ import { securityPlugin } from "./plugins/security.js";
 import { dbPlugin } from "./plugins/db.js";
 import { ptyPlugin } from "./plugins/pty.js";
 import { websocketPlugin } from "./plugins/websocket.js";
+import { authPlugin } from "./plugins/auth.js";
 import { staticPlugin } from "./plugins/static.js";
 import { previewProxyPlugin } from "./plugins/preview-proxy.js";
 import { rootRoute } from "./routes/root.js";
 import { healthRoute } from "./routes/health.js";
+import { authRoute } from "./routes/auth.js";
 import { usersRoute } from "./routes/users.js";
 import { terminalRoute } from "./routes/terminal.js";
 import { projectsRoute } from "./routes/projects.js";
@@ -52,6 +54,26 @@ export async function buildApp() {
     );
   }
 
+  // Optional in-process auth for the primary role (issue #19, src/plugins/auth.ts).
+  // TESSERA_AUTH_TOKEN alone is a real invariant violation, not just a
+  // misconfiguration to warn about and limp along with: without
+  // TESSERA_SESSION_SECRET, the login endpoint would have nothing to sign a
+  // session cookie with, so it would either crash on first login or (worse,
+  // if implemented carelessly) issue an unsigned/forgeable one — silently
+  // defeating the entire gate it's meant to add. Mirrors the agent-token
+  // check just above; unlike TESSERA_AUTH_TOKEN itself (which is legitimately
+  // optional — empty means "auth off"), this combination is never intentional.
+  if (
+    app.config.TESSERA_ROLE === "primary" &&
+    app.config.TESSERA_AUTH_TOKEN.trim() !== "" &&
+    app.config.TESSERA_SESSION_SECRET.trim() === ""
+  ) {
+    throw new Error(
+      "TESSERA_AUTH_TOKEN is set but TESSERA_SESSION_SECRET is empty — refusing to " +
+        "boot with in-process auth half-configured (see issue #19).",
+    );
+  }
+
   await app.register(loggingPlugin);
   await app.register(sensible);
   await app.register(securityPlugin);
@@ -75,6 +97,14 @@ export async function buildApp() {
   await app.register(dbPlugin);
   await app.register(ptyPlugin);
   await app.register(websocketPlugin);
+  // authPlugin must register before previewProxyPlugin: both install a
+  // global onRequest hook, and onRequest hooks run in registration order —
+  // this is what lets authPlugin's hook reject an unauthenticated
+  // preview-host HTTP request before previewProxyPlugin's own onRequest
+  // hook gets a chance to proxy it. (Not before websocketPlugin for any
+  // functional reason — see src/plugins/auth.ts's own comment on why it
+  // doesn't gate the preview-host WS upgrade path at all.)
+  await app.register(authPlugin);
   // previewProxyPlugin must register *after* websocketPlugin, not just
   // after dbPlugin (its other hard dependency, for app.db): it needs
   // @fastify/websocket's own 'upgrade' listener to already be attached to
@@ -92,6 +122,7 @@ export async function buildApp() {
 
   await app.register(rootRoute);
   await app.register(healthRoute);
+  await app.register(authRoute);
   await app.register(usersRoute);
   await app.register(projectsRoute);
   await app.register(sessionsRoute);

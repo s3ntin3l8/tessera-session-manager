@@ -26,11 +26,13 @@ const setTokenSchema = {
   },
 };
 
-// No auth hook here, same app-wide gateway-auth assumption as every other
-// route (settings.ts, hosts.ts, projects.ts) — see settings.ts's comment.
-// This is exactly why the summary this route returns never includes the
-// token itself, only `connected`/`login`/`scopes` — see
-// GitHubIntegrationSummary in services/github-integration.ts.
+// No *route-level* auth hook here, same as every other route (settings.ts,
+// hosts.ts, projects.ts) — see settings.ts's comment on the two opt-in
+// layers (gateway forward-auth and/or this process's own in-process auth,
+// issue #19) that protect it instead. This is exactly why the summary this
+// route returns never includes the token itself, only
+// `connected`/`login`/`scopes` — see GitHubIntegrationSummary in
+// services/github-integration.ts.
 export async function integrationsRoute(app: FastifyInstance) {
   // No explicit reply.type() here (unlike settings.ts's GET/PATCH) —
   // Fastify already serializes a returned plain object as

@@ -25,6 +25,7 @@
     "db:seed": "tsx src/db/seed.ts"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^11.3.0",
     "@fastify/env": "^7.0.0",
     "@fastify/helmet": "^13.1.0",

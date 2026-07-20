@@ -31,6 +31,8 @@ describe("env plugin", () => {
     expect(app.config.CRS_CONFIG_DIR).toBe("~/.config/crs");
     expect(app.config.TESSERA_ROLE).toBe("primary");
     expect(app.config.TESSERA_AGENT_TOKEN).toBe("");
+    expect(app.config.TESSERA_AUTH_TOKEN).toBe("");
+    expect(app.config.TESSERA_SESSION_SECRET).toBe("");
     expect(app.config.PREVIEW_BASE_HOST).toBe("");
     await app.close();
   });
