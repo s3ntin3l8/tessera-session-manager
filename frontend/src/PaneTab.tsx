@@ -92,7 +92,9 @@ export function PaneTab(props: IDockviewPanelHeaderProps<TerminalPaneParams>) {
       setKillArmed(false);
       setOverflowOpen(false);
       props.api.close();
-      void deleteSession(session.id);
+      void deleteSession(session.id).catch((err) => {
+        console.error("Failed to kill session", session.id, err);
+      });
     } else {
       setKillArmed(true);
       killSecondsRef.current = KILL_ARM_SECONDS;

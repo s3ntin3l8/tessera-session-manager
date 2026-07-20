@@ -294,17 +294,24 @@ export function App() {
       }
       // Remove any panels that reference killed sessions — the restored
       // layout may have been saved before those sessions were killed.  This
-      // catches stale layouts; the reactive effect below (line 439) catches
+      // catches stale layouts; the reactive `useEffect` below (commented
+      // "Close any dockview panel whose session has been killed") catches
       // the case where sessions haven't loaded yet at this point.
       const currentSessions = useDashboardStore.getState().sessions;
+      const stalePanelIds: string[] = [];
       for (const panel of dockviewApi.panels) {
         const sessionId = (panel.params as TerminalPaneParams | undefined)?.sessionId;
         if (
           sessionId != null &&
           currentSessions.some((s) => s.id === sessionId && s.status === "killed")
         ) {
-          panel.api.close();
-          closedKilledPanels = true;
+          stalePanelIds.push(panel.id);
+        }
+      }
+      if (stalePanelIds.length > 0) {
+        closedKilledPanels = true;
+        for (const id of stalePanelIds) {
+          dockviewApi.getPanel(id)?.api.close();
         }
       }
     } catch (err) {
@@ -546,8 +553,9 @@ export function App() {
   // Harmless no-op when the panel was already closed via the normal kill
   // flow (PaneTab's sync close before the API call in armOrKill).  Pairs
   // with the post-restore cleanup in the workspace restore effect (above,
-  // line 280) — when sessions haven't loaded yet during restore, this
-  // effect takes over once `sessions` populates.
+  // in the `try` block that removes stale panels after `fromJSON`) — when
+  // sessions haven't loaded yet during restore, this effect takes over once
+  // `sessions` populates.
   useEffect(() => {
     if (!dockviewApi) return;
     for (const session of sessions) {
