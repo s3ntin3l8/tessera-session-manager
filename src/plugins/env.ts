@@ -257,10 +257,16 @@ const schema = {
 // Skipped entirely under test — see env.test.ts for why the "respects
 // environment variable overrides" test isn't affected by (and doesn't
 // guard) this.
-function loadDotenvOverrides(): NodeJS.Dict<string> {
+//
+// `path` is exported/parameterized for tests only — production always calls
+// this with no argument (the real ".env" at cwd); see env.test.ts's
+// dedicated fixture-file test for the precedence flip this enables (an
+// inherited process.env losing to .env), which the default call path can't
+// exercise since it always resolves to this same real, gitignored file.
+export function loadDotenvOverrides(path = ".env"): NodeJS.Dict<string> {
   if (process.env.NODE_ENV === "test") return {};
-  if (!existsSync(".env")) return {};
-  return parseEnv(readFileSync(".env", "utf8"));
+  if (!existsSync(path)) return {};
+  return parseEnv(readFileSync(path, "utf8"));
 }
 
 export const envPlugin = fp(async (app) => {
