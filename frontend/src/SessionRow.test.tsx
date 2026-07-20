@@ -66,10 +66,9 @@ const SESSION: Session = {
 };
 
 describe("SessionRow", () => {
-  it("sets application/x-tessera-session on drag start", async () => {
+  it("sets application/x-tessera-session on drag start", () => {
     const onOpen = vi.fn();
     const onEnd = vi.fn();
-    const user = userEvent.setup();
 
     render(<SessionRow session={SESSION} onOpen={onOpen} onEnd={onEnd} />);
 
