@@ -517,10 +517,10 @@ export function TerminalPane(props: {
       const ws = wsRef.current;
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(new TextEncoder().encode(oscPush));
-        prevThemeRef.current = theme;
       } else {
         pendingOscRef.current = oscPush;
       }
+      prevThemeRef.current = theme;
     }
     attachKeyConflictHandler(
       term,

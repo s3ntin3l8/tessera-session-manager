@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, waitFor } from "@testing-library/react";
 import type { Theme } from "./store.js";
 import { useDashboardStore } from "./store.js";
+import { TerminalPane } from "./TerminalPane.js";
 
 interface FakeSocket {
   readyState: number;
@@ -26,37 +27,45 @@ vi.mock("@xterm/xterm", () => {
   function createDisposable() {
     return { dispose: vi.fn() };
   }
-  const Terminal = vi.fn(() => ({
-    options: {} as Record<string, unknown>,
-    unicode: {
-      _v: "",
-      set activeVersion(v: string) {
-        this._v = v;
+  const Terminal = vi.fn(function () {
+    return {
+      options: {} as Record<string, unknown>,
+      unicode: {
+        _v: "",
+        set activeVersion(v: string) {
+          this._v = v;
+        },
+        get activeVersion() {
+          return this._v;
+        },
       },
-      get activeVersion() {
-        return this._v;
-      },
-    },
-    cols: 80,
-    rows: 24,
-    open: vi.fn(),
-    loadAddon: vi.fn(),
-    dispose: vi.fn(),
-    write: vi.fn(),
-    hasSelection: vi.fn(() => false),
-    getSelection: vi.fn(() => ""),
-    paste: vi.fn(),
-    onData: vi.fn(() => createDisposable()),
-    onTitleChange: vi.fn(() => createDisposable()),
-    onSelectionChange: vi.fn(() => createDisposable()),
-    attachCustomKeyEventHandler: vi.fn(),
-  }));
+      cols: 80,
+      rows: 24,
+      open: vi.fn(),
+      loadAddon: vi.fn(),
+      dispose: vi.fn(),
+      write: vi.fn(),
+      hasSelection: vi.fn(() => false),
+      getSelection: vi.fn(() => ""),
+      paste: vi.fn(),
+      onData: vi.fn(() => createDisposable()),
+      onTitleChange: vi.fn(() => createDisposable()),
+      onSelectionChange: vi.fn(() => createDisposable()),
+      attachCustomKeyEventHandler: vi.fn(),
+    };
+  });
   return { Terminal };
 });
 
-vi.mock("@xterm/addon-fit", () => ({ FitAddon: vi.fn(() => ({ fit: vi.fn() })) }));
+vi.mock("@xterm/addon-fit", () => ({
+  FitAddon: vi.fn(function () {
+    return { fit: vi.fn() };
+  }),
+}));
 vi.mock("@xterm/addon-webgl", () => ({
-  WebglAddon: vi.fn(() => ({ clearTextureAtlas: vi.fn() })),
+  WebglAddon: vi.fn(function () {
+    return { clearTextureAtlas: vi.fn() };
+  }),
 }));
 vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: vi.fn() }));
 vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: vi.fn() }));
@@ -82,14 +91,19 @@ function stubFakeWebSocket(openImmediately: boolean) {
   if (openImmediately) {
     fakeSocket.readyState = 1;
   }
-  vi.stubGlobal(
-    "WebSocket",
-    vi.fn(() => fakeSocket),
-  );
+  vi.stubGlobal("WebSocket", function () {
+    return fakeSocket;
+  });
 }
 
 beforeEach(() => {
   localStorage.clear();
+  vi.stubGlobal(
+    "ResizeObserver",
+    vi.fn(function () {
+      return { observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() };
+    }),
+  );
 });
 
 afterEach(() => {
@@ -97,7 +111,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-async function renderPane() {
+function renderPane() {
   useDashboardStore.setState({
     settings: {
       theme: "dark",
@@ -138,14 +152,13 @@ async function renderPane() {
     workspaces: [],
     groups: [],
   });
-  const { TerminalPane } = await import("./TerminalPane.js");
   render(<TerminalPane params={{ sessionId: 1 }} />);
 }
 
 describe("TerminalPane OSC push", () => {
   it("sends OSC 10/11 bytes on theme toggle when socket is OPEN", async () => {
     stubFakeWebSocket(true);
-    await renderPane();
+    renderPane();
 
     await waitFor(() => expect(fakeSocket.readyState).toBe(1));
 
@@ -162,7 +175,7 @@ describe("TerminalPane OSC push", () => {
 
   it("does NOT send when socket is CLOSED, but sends on open", async () => {
     stubFakeWebSocket(false);
-    await renderPane();
+    renderPane();
 
     useDashboardStore.setState({ theme: "light" as Theme });
 
@@ -174,15 +187,26 @@ describe("TerminalPane OSC push", () => {
     await waitFor(() => {
       expect(fakeWsSend).toHaveBeenCalled();
     });
-    const sent = fakeWsSend.mock.calls[0][0];
-    expect(sent).toBeInstanceOf(Uint8Array);
-    const decoded = new TextDecoder().decode(sent);
-    expect(decoded).toMatch(oscRegex());
+    const sent1 = fakeWsSend.mock.calls[0][0];
+    expect(sent1).toBeInstanceOf(Uint8Array);
+    expect(new TextDecoder().decode(sent1)).toMatch(oscRegex());
+
+    // Toggle back to dark — prevThemeRef was advanced when the queued bytes
+    // were stored, so this correctly detects a new change and sends again.
+    fakeWsSend.mockClear();
+    useDashboardStore.setState({ theme: "dark" as Theme });
+
+    await waitFor(() => {
+      expect(fakeWsSend).toHaveBeenCalled();
+    });
+    const sent2 = fakeWsSend.mock.calls[0][0];
+    expect(sent2).toBeInstanceOf(Uint8Array);
+    expect(new TextDecoder().decode(sent2)).toMatch(oscRegex());
   });
 
   it("does not send on unrelated pref changes (cursor blink)", async () => {
     stubFakeWebSocket(true);
-    await renderPane();
+    renderPane();
 
     await waitFor(() => expect(fakeSocket.readyState).toBe(1));
 
