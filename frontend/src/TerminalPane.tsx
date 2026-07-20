@@ -38,15 +38,39 @@ function reservedKeysFromSettings(keyCapture: AppSettings["terminal"]["keyCaptur
   return keys;
 }
 
-function attachKeyConflictHandler(term: Terminal, reservedKeys: Set<string>, onPaste?: () => void): void {
+function readClipboard(): Promise<string | null> {
+  if (!navigator.clipboard) {
+    console.warn("[terminal] clipboard API not available (not a secure context)");
+    return Promise.resolve(null);
+  }
+  return navigator.clipboard.readText().catch(() => {
+    console.warn("[terminal] clipboard read denied");
+    return null;
+  });
+}
+
+function attachKeyConflictHandler(
+  term: Terminal,
+  reservedKeys: Set<string>,
+  onPaste?: () => void,
+): void {
   term.attachCustomKeyEventHandler((event) => {
-    if (event.type === "keydown" && event.ctrlKey) {
-      if (event.key.toLowerCase() === "v") {
+    if (event.type === "keydown") {
+      // Ctrl+V / Cmd+V — paste from system clipboard into the PTY.
+      // AltGr (Ctrl+Alt) on non-US layouts needs to pass through rather
+      // than being intercepted as a paste shortcut.
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "v") {
         event.preventDefault();
         onPaste?.();
         return false;
       }
-      if (reservedKeys.has(event.key.toLowerCase())) {
+      // Browser-reserved combos the user opted into this app
+      if (
+        event.ctrlKey &&
+        !event.altKey &&
+        !event.metaKey &&
+        reservedKeys.has(event.key.toLowerCase())
+      ) {
         event.preventDefault();
       }
     }
@@ -202,21 +226,20 @@ export function TerminalPane(props: { params: TerminalPaneParams }) {
       if (!prefsRef.current.copyOnSelect) return;
       const text = term.getSelection();
       if (!text) return;
-      if (!navigator.clipboard) {
-        console.warn("[terminal] clipboard API not available (not a secure context)");
-        return;
-      }
-      navigator.clipboard.writeText(text).then(() => {
-        if (destroyed) return;
-        setCopied(true);
-        if (copyToastTimer) clearTimeout(copyToastTimer);
-        copyToastTimer = setTimeout(() => {
+      void navigator.clipboard
+        ?.writeText(text)
+        .then(() => {
           if (destroyed) return;
-          setCopied(false);
-        }, 1500);
-      }).catch((err: unknown) => {
-        console.warn("[terminal] clipboard write failed:", err);
-      });
+          setCopied(true);
+          if (copyToastTimer) clearTimeout(copyToastTimer);
+          copyToastTimer = setTimeout(() => {
+            if (destroyed) return;
+            setCopied(false);
+          }, 1500);
+        })
+        .catch((err: unknown) => {
+          console.warn("[terminal] clipboard write failed:", err);
+        });
     });
 
     // Ctrl+V paste handler — reads from the system clipboard and writes to
@@ -224,16 +247,12 @@ export function TerminalPane(props: { params: TerminalPaneParams }) {
     // attachKeyConflictHandler above so it works even when the browser wants
     // to intercept Ctrl+V itself.
     pasteHandlerRef.current = () => {
-      if (!navigator.clipboard) {
-        console.warn("[terminal] clipboard API not available (not a secure context)");
-        return;
-      }
-      navigator.clipboard.readText().then((text) => {
+      readClipboard().then((text) => {
         if (text && ws?.readyState === WebSocket.OPEN) {
+          // Multi-line paste sends newlines as-is; bracketed paste mode
+          // is not currently supported on the backend PTY.
           ws.send(new TextEncoder().encode(text));
         }
-      }).catch(() => {
-        console.warn("[terminal] clipboard read denied");
       });
     };
 
@@ -243,16 +262,10 @@ export function TerminalPane(props: { params: TerminalPaneParams }) {
     const onContextMenu = (event: MouseEvent) => {
       if (!prefsRef.current.pasteOnRightClick) return;
       event.preventDefault();
-      if (!navigator.clipboard) {
-        console.warn("[terminal] clipboard API not available (not a secure context)");
-        return;
-      }
-      navigator.clipboard.readText().then((text) => {
+      readClipboard().then((text) => {
         if (text && ws?.readyState === WebSocket.OPEN) {
           ws.send(new TextEncoder().encode(text));
         }
-      }).catch(() => {
-        console.warn("[terminal] clipboard read denied");
       });
     };
     container.addEventListener("contextmenu", onContextMenu);
