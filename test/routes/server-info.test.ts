@@ -17,6 +17,10 @@ describe("server-info route", () => {
 
   it("returns read-only diagnostics without ever exposing DB_ENCRYPTION_KEY", async () => {
     process.env.DATABASE_URL = `file:${tmpDb}`;
+    // No need to restore NODE_ENV or clear DB_ENCRYPTION_KEY/PREVIEW_BASE_HOST
+    // here — test/setup.ts now forces NODE_ENV to "test" and clears every
+    // other schema-defined config var once per test file, so a developer's
+    // shell never leaks into these assertions.
     const app = await buildApp();
 
     const res = await app.inject({ method: "GET", url: "/api/server-info" });

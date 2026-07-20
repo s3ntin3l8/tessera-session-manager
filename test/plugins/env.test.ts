@@ -6,6 +6,14 @@ import { buildApp } from "../../src/app.js";
 import { loadDotenvOverrides } from "../../src/plugins/env.js";
 
 describe("env plugin", () => {
+  // Load-bearing: PORT/LOG_LEVEL are set by "respects environment variable
+  // overrides" below and must be cleared before the next test in this file
+  // runs. DATABASE_URL restores the per-file value test/setup.ts assigns
+  // (which "loads with default values" clears to assert the schema default).
+  // DB_ENCRYPTION_KEY/CORS_ORIGIN/RATE_LIMIT_* are backstops only — no test
+  // in this file currently sets them via process.env, since test/setup.ts's
+  // global reset already keeps them clean per file; kept here in case a
+  // future test in this file does.
   afterEach(async () => {
     delete process.env.PORT;
     delete process.env.LOG_LEVEL;
@@ -18,10 +26,10 @@ describe("env plugin", () => {
 
   it("loads with default values (NODE_ENV may be set by test runner)", async () => {
     // Clear the per-file DATABASE_URL injected by test/setup.ts to assert the
-    // schema default is applied. PORT doesn't need the same treatment:
-    // envPlugin skips dotenv entirely under NODE_ENV=test (see env.ts), so a
-    // developer's real local .env — e.g. a PORT override to dodge a conflict
-    // with another project's dev server, as on this box — never leaks in.
+    // schema default is applied. No other var needs the same treatment here:
+    // test/setup.ts now clears every other schema-defined config var once per
+    // test file too, so a developer's shell (PORT, DB_ENCRYPTION_KEY,
+    // PREVIEW_BASE_HOST, ...) never leaks into app.config in the first place.
     delete process.env.DATABASE_URL;
     const app = await buildApp();
     expect(app.config.PORT).toBe(3000);
