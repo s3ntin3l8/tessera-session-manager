@@ -274,6 +274,18 @@ export function App() {
       if (workspace.layout) {
         dockviewApi.fromJSON(workspace.layout as unknown as Parameters<DockviewApi["fromJSON"]>[0]);
       }
+      // Remove any panels that reference killed sessions — the restored
+      // layout may have been saved before those sessions were killed.
+      const currentSessions = useDashboardStore.getState().sessions;
+      for (const panel of dockviewApi.panels) {
+        const sessionId = (panel.params as TerminalPaneParams | undefined)?.sessionId;
+        if (
+          sessionId != null &&
+          currentSessions.some((s) => s.id === sessionId && s.status === "killed")
+        ) {
+          panel.api.close();
+        }
+      }
     } catch (err) {
       // A corrupt or version-incompatible layout blob must never brick the
       // whole dashboard — this runs outside any panel's own ErrorBoundary,
@@ -410,6 +422,20 @@ export function App() {
     }
     seenExitedRef.current = exitedNow;
   }, [sessions, settings.notifications]);
+
+  // Close any dockview panel whose session has been killed — catches cases
+  // where the layout was saved before the kill and then restored (workspace
+  // switch, page reload), causing the killed session's panel to reappear.
+  // Harmless no-op when the panel was already closed via the normal kill
+  // flow (PaneTab's sync close before the API call in armOrKill).
+  useEffect(() => {
+    if (!dockviewApi) return;
+    for (const session of sessions) {
+      if (session.status === "killed") {
+        dockviewApi.getPanel(`session-${session.id}`)?.api.close();
+      }
+    }
+  }, [sessions, dockviewApi]);
 
   const onOpenSession = useCallback(
     (session: Session) => {

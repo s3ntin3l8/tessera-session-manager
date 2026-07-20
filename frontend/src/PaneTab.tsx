@@ -91,7 +91,8 @@ export function PaneTab(props: IDockviewPanelHeaderProps<TerminalPaneParams>) {
       if (armTimer.current) clearInterval(armTimer.current);
       setKillArmed(false);
       setOverflowOpen(false);
-      void deleteSession(session.id).then(() => props.api.close());
+      props.api.close();
+      void deleteSession(session.id);
     } else {
       setKillArmed(true);
       killSecondsRef.current = KILL_ARM_SECONDS;
