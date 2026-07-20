@@ -419,17 +419,24 @@ export function App() {
       if (existing) {
         existing.api.setActive();
         if (isMobile) dockviewApi.maximizeGroup(existing);
-      } else {
-        const projectName = projects.find((p) => p.id === session.projectId)?.name;
-        const panel = dockviewApi.addPanel({
-          id: panelId,
-          component: "terminal",
-          tabComponent: "terminal",
-          title: initialPaneTitle(session, projectName),
-          params: { sessionId: session.id },
-        });
-        if (isMobile) dockviewApi.maximizeGroup(panel);
+        setSidebarOpen(false);
+        return;
       }
+
+      // Session not in the current workspace — open as a floating panel
+      // so we don't modify the current workspace layout. The user can drag
+      // its tab into any group to dock it permanently (native dockview DnD),
+      // or close it to dismiss without leaving a trace.
+      const projectName = projects.find((p) => p.id === session.projectId)?.name;
+      const panel = dockviewApi.addPanel({
+        id: panelId,
+        component: "terminal",
+        tabComponent: "terminal",
+        title: initialPaneTitle(session, projectName),
+        params: { sessionId: session.id },
+        floating: true,
+      });
+      if (isMobile) dockviewApi.maximizeGroup(panel);
       setSidebarOpen(false);
     },
     [dockviewApi, isMobile, projects],
