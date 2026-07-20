@@ -131,6 +131,29 @@ describe("auth plugin + routes (issue #19)", () => {
         expect(res.statusCode).toBe(200);
         await app.close();
       });
+
+      it("is rate-limited independently of RATE_LIMIT_MAX — a dedicated brute-force bound (CodeQL js/missing-rate-limiting)", async () => {
+        const app = await buildApp();
+        // src/routes/auth.ts's LOGIN_RATE_LIMIT caps this route at 10/min
+        // regardless of the app-wide default, since a request that only
+        // ever hits this one route could otherwise spend that whole budget
+        // guessing tokens.
+        for (let i = 0; i < 10; i++) {
+          const res = await app.inject({
+            method: "POST",
+            url: "/api/auth/login",
+            payload: { token: "wrong" },
+          });
+          expect(res.statusCode).toBe(401);
+        }
+        const eleventh = await app.inject({
+          method: "POST",
+          url: "/api/auth/login",
+          payload: { token: TEST_TOKEN },
+        });
+        expect(eleventh.statusCode).toBe(429);
+        await app.close();
+      });
     });
 
     describe("POST /api/auth/logout", () => {

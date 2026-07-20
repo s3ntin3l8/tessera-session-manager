@@ -18,6 +18,19 @@ const loginSchema = {
   },
 };
 
+// Both routes below perform an authorization check (isValidLoginToken /
+// isRequestAuthenticated) reachable with no credential at all — CodeQL's
+// js/missing-rate-limiting flagged them prior to this: the app-wide default
+// (security.ts's RATE_LIMIT_MAX, tuned for a browser's normal UI traffic —
+// dozens of calls per page load) isn't a *dedicated* bound on login
+// attempts specifically, so a request that only ever hits this one route
+// could still exhaust most of that budget guessing tokens. Much stricter
+// ceilings here, independent of RATE_LIMIT_MAX, same
+// `{ config: { rateLimit } }` per-route override mechanism internal.ts's own
+// INTERNAL_RATE_LIMIT uses.
+const LOGIN_RATE_LIMIT = { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } };
+const ME_RATE_LIMIT = { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } };
+
 // All three routes live under /api/auth/ — src/plugins/auth.ts's onRequest
 // gate deliberately exempts that whole prefix (see its own comment), since
 // a request can't authenticate itself against a gate that also blocks the
@@ -27,7 +40,7 @@ const loginSchema = {
 export async function authRoute(app: FastifyInstance) {
   app.post<{ Body: { token: string } }>(
     "/api/auth/login",
-    { schema: loginSchema },
+    { schema: loginSchema, ...LOGIN_RATE_LIMIT },
     async (request, reply) => {
       if (!isValidLoginToken(request.body.token, app.config)) {
         return reply.unauthorized("invalid token");
@@ -60,7 +73,7 @@ export async function authRoute(app: FastifyInstance) {
     reply.code(204);
   });
 
-  app.get("/api/auth/me", async (request) => {
+  app.get("/api/auth/me", ME_RATE_LIMIT, async (request) => {
     const enabled = isAuthEnabled(app.config);
     return {
       authMode: enabled ? "token" : "none",
