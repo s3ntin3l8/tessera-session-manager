@@ -101,6 +101,9 @@ placeholders there need real values only you have:
 
 ## Optional: in-process auth (issues #19, #30)
 
+See [`docs/auth.md`](../docs/auth.md) for the full setup/security writeup;
+this section covers how it fits into this deployment specifically.
+
 The forwardAuth middleware above is still the recommended posture — it
 rejects unauthenticated requests before they ever reach this process. But
 it's no longer the only option: setting `TESSERA_AUTH_TOKEN` (and

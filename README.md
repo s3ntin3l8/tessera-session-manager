@@ -38,6 +38,10 @@ CI/CD. Frontend: React + [dockview](https://dockview.dev/) (tiled splits/tabs)
   and any project with a github.com `origin` gets a Dock status widget and
   panel for open issues/PRs and Actions/CI status. See
   [`docs/github-integration.md`](docs/github-integration.md).
+- **Optional in-process auth.** A shared-token gate and/or native OIDC login
+  (e.g. against Authentik) — either or both, off by default, composable
+  with (not a replacement for) an external forwardAuth gateway. See
+  [`docs/auth.md`](docs/auth.md) for setup.
 
 > **Status:** the backend is feature-complete for projects, durable sessions,
 > named/grouped workspace layouts, project discovery, unified launchers
@@ -53,15 +57,12 @@ CI/CD. Frontend: React + [dockview](https://dockview.dev/) (tiled splits/tabs)
 > drag-to-reorder, a per-project dock, session status badges, a browser
 > preview panel, a GitHub status widget, and a Settings panel (including
 > host management and integrations) — and is under active polish, not
-> frozen. Auth is now optional and in-process, not only gateway-delegated:
-> `TESSERA_AUTH_TOKEN` gates every `/api/*` route and the `/ws/terminal`
-> upgrade with a shared token (issue #19), and `TESSERA_OIDC_*` adds native
-> OIDC login (issue #30, e.g. against Authentik) as a second way to mint the
-> same session — either or both can be configured at once. Both are off by
-> default (a clear boot warning logs when neither is set), and composable
-> with, not a replacement for, an external Traefik + Authentik forwardAuth
-> gateway. Native deployment (systemd/Traefik/Authentik) is drafted under
-> `deploy/` but not yet installed anywhere — see `deploy/README.md`.
+> frozen. Auth is now optional and in-process, not only gateway-delegated —
+> a shared-token gate and/or native OIDC login, either or both, off by
+> default and composable with, not a replacement for, an external Traefik +
+> Authentik forwardAuth gateway; see [`docs/auth.md`](docs/auth.md). Native
+> deployment (systemd/Traefik/Authentik) is drafted under `deploy/` but not
+> yet installed anywhere — see `deploy/README.md`.
 
 ## 🚀 Quick Start
 
@@ -95,16 +96,17 @@ curl localhost:3000/api/projects
   rate-limit, CORS, and the preview subdomains' `frame-src` CSP entry), `db`
   (migrations + `app.db`/`app.encryption` decorators), `pty` (`app.pty`
   session manager + periodic exited-session reconciler), `websocket`, `auth`
-  (optional in-process auth, issues #19/#30 — a global `onRequest` hook
-  covering every `/api/*` route and the `/ws/terminal` upgrade; inert until
-  `TESSERA_AUTH_TOKEN` or `TESSERA_OIDC_*` is set), `static` (serves the
+  (optional in-process auth — a global `onRequest` hook covering every
+  `/api/*` route and the `/ws/terminal` upgrade; inert until
+  `TESSERA_AUTH_TOKEN` or `TESSERA_OIDC_*` is set — see
+  [`docs/auth.md`](docs/auth.md)), `static` (serves the
   built frontend once it exists), `preview-proxy` (the subdomain reverse
   proxy + HMR websocket proxying for browser previews — see
   [`docs/browser-previews.md`](docs/browser-previews.md); fully inert until
   `PREVIEW_BASE_HOST` is set).
 - `src/routes/` — `health` (`/health`, `/ready`), `auth` (`/api/auth/login`,
-  `/logout`, `/me`, and `/oidc/login`, `/oidc/callback` — the `auth` plugin's
-  login endpoints, issues #19/#30), `users` (template-inherited example
+  `/logout`, `/me`, and `/oidc/login`, `/oidc/callback` — see
+  [`docs/auth.md`](docs/auth.md)), `users` (template-inherited example
   CRUD), `root` (placeholder `/`, disabled once
   the frontend build exists — also template-inherited), `projects` (CRUD +
   discovery + per-project actions/dock), `sessions` (durable terminal
@@ -138,30 +140,37 @@ curl localhost:3000/api/projects
 - `docs/` — deep-dive docs for specific subsystems:
   [`multi-host.md`](docs/multi-host.md),
   [`browser-previews.md`](docs/browser-previews.md),
-  [`github-integration.md`](docs/github-integration.md).
+  [`github-integration.md`](docs/github-integration.md),
+  [`auth.md`](docs/auth.md).
 
 ## 🔧 Configuration
 
 All config is validated at startup by `@fastify/env` (see `src/plugins/env.ts`).
 
-| Variable                 | Default              | Description                                                                                                                                                                                   |
-| ------------------------ | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`               | `development`        | `development` \| `production` \| `test`                                                                                                                                                       |
-| `PORT`                   | `3000`               | HTTP listen port                                                                                                                                                                              |
-| `LOG_LEVEL`              | `info`               | pino log level                                                                                                                                                                                |
-| `DATABASE_URL`           | `file:./data/app.db` | SQLite `file:` URL                                                                                                                                                                            |
-| `DB_ENCRYPTION_KEY`      | _(empty)_            | base64url 32-byte key; enables encryption-at-rest                                                                                                                                             |
-| `CORS_ORIGIN`            | _(empty)_            | comma-separated allowlist; empty disables CORS                                                                                                                                                |
-| `RATE_LIMIT_MAX`         | `100`                | max requests per window                                                                                                                                                                       |
-| `RATE_LIMIT_WINDOW`      | `1 minute`           | rate-limit window                                                                                                                                                                             |
-| `SESSIONS_DIR`           | `./data/sessions`    | dir holding one dtach socket per terminal session                                                                                                                                             |
-| `FRONTEND_DIST`          | `./frontend/dist`    | built frontend assets; served at `/` once present                                                                                                                                             |
-| `PROJECTS_ROOTS`         | _(empty)_            | comma-separated dirs to scan for `GET /api/projects/discover`                                                                                                                                 |
-| `CRS_CONFIG_DIR`         | `~/.config/crs`      | global launcher/dock config dir (a project's own `.crs/` wins)                                                                                                                                |
-| `TESSERA_ROLE`           | `primary`            | `primary` \| `agent` — see [`docs/multi-host.md`](docs/multi-host.md); `agent` is a DB-less process that only runs PtyManager locally                                                         |
-| `TESSERA_AGENT_TOKEN`    | _(empty)_            | shared secret an `agent` process's internal API requires on every request; `agent` refuses to boot without one                                                                                |
-| `GITHUB_OAUTH_CLIENT_ID` | _(empty)_            | GitHub OAuth App client id; enables the device-flow "Connect with GitHub" button — see [`docs/github-integration.md`](docs/github-integration.md). PAT connect works with no client id at all |
-| `PREVIEW_BASE_HOST`      | _(empty)_            | base host for browser preview subdomains (`preview-<slug>.<host>`); empty disables the feature entirely — see [`docs/browser-previews.md`](docs/browser-previews.md)                          |
+| Variable                     | Default              | Description                                                                                                                                                                                   |
+| ---------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                   | `development`        | `development` \| `production` \| `test`                                                                                                                                                       |
+| `PORT`                       | `3000`               | HTTP listen port                                                                                                                                                                              |
+| `LOG_LEVEL`                  | `info`               | pino log level                                                                                                                                                                                |
+| `DATABASE_URL`               | `file:./data/app.db` | SQLite `file:` URL                                                                                                                                                                            |
+| `DB_ENCRYPTION_KEY`          | _(empty)_            | base64url 32-byte key; enables encryption-at-rest                                                                                                                                             |
+| `CORS_ORIGIN`                | _(empty)_            | comma-separated allowlist; empty disables CORS                                                                                                                                                |
+| `RATE_LIMIT_MAX`             | `100`                | max requests per window                                                                                                                                                                       |
+| `RATE_LIMIT_WINDOW`          | `1 minute`           | rate-limit window                                                                                                                                                                             |
+| `SESSIONS_DIR`               | `./data/sessions`    | dir holding one dtach socket per terminal session                                                                                                                                             |
+| `FRONTEND_DIST`              | `./frontend/dist`    | built frontend assets; served at `/` once present                                                                                                                                             |
+| `PROJECTS_ROOTS`             | _(empty)_            | comma-separated dirs to scan for `GET /api/projects/discover`                                                                                                                                 |
+| `CRS_CONFIG_DIR`             | `~/.config/crs`      | global launcher/dock config dir (a project's own `.crs/` wins)                                                                                                                                |
+| `TESSERA_ROLE`               | `primary`            | `primary` \| `agent` — see [`docs/multi-host.md`](docs/multi-host.md); `agent` is a DB-less process that only runs PtyManager locally                                                         |
+| `TESSERA_AGENT_TOKEN`        | _(empty)_            | shared secret an `agent` process's internal API requires on every request; `agent` refuses to boot without one                                                                                |
+| `TESSERA_AUTH_TOKEN`         | _(empty)_            | shared token gating every `/api/*` route + `/ws/terminal`; empty disables in-process auth entirely — see [`docs/auth.md`](docs/auth.md)                                                       |
+| `TESSERA_SESSION_SECRET`     | _(empty)_            | signs the session cookie; required whenever `TESSERA_AUTH_TOKEN` or `TESSERA_OIDC_*` is set (boot refuses otherwise) — see [`docs/auth.md`](docs/auth.md)                                     |
+| `TESSERA_OIDC_ISSUER`        | _(empty)_            | OIDC discovery/issuer URL; all four `TESSERA_OIDC_*` keys must be set together — see [`docs/auth.md`](docs/auth.md)                                                                           |
+| `TESSERA_OIDC_CLIENT_ID`     | _(empty)_            | OIDC client id                                                                                                                                                                                |
+| `TESSERA_OIDC_CLIENT_SECRET` | _(empty)_            | OIDC client secret (confidential client — this process does the code exchange server-side)                                                                                                    |
+| `TESSERA_OIDC_REDIRECT_URI`  | _(empty)_            | must exactly match a redirect URI registered at the provider, e.g. `https://tessera.example.com/api/auth/oidc/callback`                                                                       |
+| `GITHUB_OAUTH_CLIENT_ID`     | _(empty)_            | GitHub OAuth App client id; enables the device-flow "Connect with GitHub" button — see [`docs/github-integration.md`](docs/github-integration.md). PAT connect works with no client id at all |
+| `PREVIEW_BASE_HOST`          | _(empty)_            | base host for browser preview subdomains (`preview-<slug>.<host>`); empty disables the feature entirely — see [`docs/browser-previews.md`](docs/browser-previews.md)                          |
 
 Generate an encryption key:
 
