@@ -1,3 +1,14 @@
+// Mirrors src/routes/auth.ts's GET /api/auth/me response. authMode "none"
+// means in-process auth isn't configured at all (TESSERA_AUTH_TOKEN unset)
+// — App.tsx renders the dashboard unconditionally in that case, the same
+// behavior as before this feature existed. "token" is issue #19's shared
+// bearer/cookie gate; a future "oidc" (issue #30) is additive, not a
+// replacement.
+export interface AuthStatus {
+  authMode: "none" | "token";
+  authenticated: boolean;
+}
+
 export interface Project {
   id: number;
   name: string;
@@ -369,6 +380,11 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
+    // Same-origin only (never sent cross-origin) — required for the
+    // optional in-process auth session cookie (issue #19,
+    // src/plugins/auth.ts) to ride along; a no-op when TESSERA_AUTH_TOKEN is
+    // unset, since there's no cookie to send either way.
+    credentials: "same-origin",
     // Only set this when there's actually a body — sending it on bodyless
     // requests (GET, DELETE) is invalid and some fetch layers reject it outright.
     headers: init?.body ? { "Content-Type": "application/json", ...init.headers } : init?.headers,
@@ -571,4 +587,14 @@ export const api = {
 
   deletePreview: (slug: string) =>
     request<void>(`/api/previews/${encodeURIComponent(slug)}`, { method: "DELETE" }),
+
+  // Never gated by src/plugins/auth.ts's own onRequest hook (see its
+  // /api/auth/ prefix exemption) — a request has to be able to reach these
+  // to authenticate in the first place.
+  getAuthStatus: () => request<AuthStatus>("/api/auth/me"),
+
+  login: (token: string) =>
+    request<void>("/api/auth/login", { method: "POST", body: JSON.stringify({ token }) }),
+
+  logout: () => request<void>("/api/auth/logout", { method: "POST" }),
 };

@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import crypto from "node:crypto";
 import path from "node:path";
 import { WebSocket as NodeWebSocket } from "ws";
 import {
@@ -16,6 +15,7 @@ import { attachSocketToSession } from "./terminal.js";
 import type { SessionInfo } from "../services/pty-manager.js";
 import { buildUpstreamRequestHeaders, relayFetchResponse } from "../services/http-proxy.js";
 import { pipeWsFrames, toWsUrl } from "../services/ws-pipe.js";
+import { timingSafeTokenMatch } from "../services/crypto-utils.js";
 
 interface SpawnSessionBody {
   id: string;
@@ -104,15 +104,6 @@ const terminateSchema = {
 // tuned for a browser). Still bounded, since the token alone doesn't prove
 // the caller is well-behaved.
 const INTERNAL_RATE_LIMIT = { config: { rateLimit: { max: 1000, timeWindow: "1 minute" } } };
-
-/** Constant-time token compare — crypto.timingSafeEqual throws on unequal
- * lengths, so the length check that guards it is an unavoidable, accepted
- * side channel (the token's length, not its content) for a long random
- * shared secret; see src/plugins/env.ts's TESSERA_AGENT_TOKEN doc. */
-function timingSafeTokenMatch(provided: string, expected: string): boolean {
-  if (provided.length !== expected.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
-}
 
 /**
  * Constrain a request-supplied cwd to this agent's own PROJECTS_ROOTS before

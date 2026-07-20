@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { EventEmitter } from "node:events";
 import type * as ChildProcess from "node:child_process";
+import { WebSocket as NodeWebSocket } from "ws";
 
 // Real integration test: a genuine WebSocket client against a real listening
 // server, not app.inject() (which can't drive a full-duplex upgrade). The
@@ -69,6 +70,8 @@ const { buildApp } = await import("../../src/app.js");
 const { closeDb } = await import("../../src/db/client.js");
 const { sessions } = await import("../../src/db/schema.js");
 const { eq } = await import("drizzle-orm");
+const { createSessionCookieValue, SESSION_COOKIE_NAME } =
+  await import("../../src/services/auth.js");
 
 const tmpDb = path.join(os.tmpdir(), `terminal-test-${process.pid}.db`);
 
@@ -122,11 +125,19 @@ describe("terminal route (/ws/terminal)", () => {
   // the length before creating a session and waiting for it to grow past
   // that snapshot is what actually identifies *this* test's own pty, since
   // `length > 0` alone is trivially already true after the first test.
-  async function createProjectAndSession(app: Awaited<ReturnType<typeof buildApp>>) {
+  async function createProjectAndSession(
+    app: Awaited<ReturnType<typeof buildApp>>,
+    // Only needed by the auth describe block below, where TESSERA_AUTH_TOKEN
+    // is set — app.inject() bypasses the network but not src/plugins/auth.ts's
+    // own onRequest hook, so these setup calls need a credential too once
+    // it's enabled.
+    headers?: Record<string, string>,
+  ) {
     const project = await app.inject({
       method: "POST",
       url: "/api/projects",
       payload: { name: "p", cwd: "/tmp" },
+      headers,
     });
     const projectId = project.json().id as number;
 
@@ -135,6 +146,7 @@ describe("terminal route (/ws/terminal)", () => {
       method: "POST",
       url: "/api/sessions",
       payload: { projectId, command: "bash" },
+      headers,
     });
     const sessionId = session.json().id as number;
 
@@ -244,5 +256,104 @@ describe("terminal route (/ws/terminal)", () => {
     });
 
     await app.close();
+  });
+
+  // app.inject() can't drive a real WS upgrade (see this file's own top
+  // comment), and that's exactly the gap issue #19 needs covered: a browser
+  // can't set a custom Authorization header on a WebSocket handshake, but
+  // Node's own `ws` client can — used here (instead of the global
+  // browser-style WebSocket the tests above use) specifically so these tests
+  // can attach an Authorization/Cookie header to the handshake, the same way
+  // src/plugins/auth.ts's onRequest hook (which fires before the upgrade
+  // completes — see that file's own comment) expects to find them.
+  describe("in-process auth gate (issue #19)", () => {
+    const TEST_TOKEN = "test-shared-token-abcdef123456";
+    const TEST_SECRET = "test-session-secret-abcdef123456";
+
+    beforeEach(() => {
+      process.env.TESSERA_AUTH_TOKEN = TEST_TOKEN;
+      process.env.TESSERA_SESSION_SECRET = TEST_SECRET;
+    });
+
+    afterEach(() => {
+      delete process.env.TESSERA_AUTH_TOKEN;
+      delete process.env.TESSERA_SESSION_SECRET;
+    });
+
+    // Unlike the global browser-style WebSocket the tests above use, `ws`'s
+    // own client emits a real 'error' event (an EventEmitter default that
+    // crashes the process if unhandled) when the server rejects the
+    // handshake outright, rather than only ever going straight to 'close' —
+    // a 401 during the upgrade is exactly that case, so this listens for
+    // both and treats either as "rejected".
+    function waitForNodeWsOpenOrClose(ws: NodeWebSocket): Promise<"open" | "close"> {
+      return new Promise((resolve) => {
+        ws.once("open", () => resolve("open"));
+        ws.once("close", () => resolve("close"));
+        ws.once("error", () => resolve("close"));
+      });
+    }
+
+    it("rejects a /ws/terminal upgrade with no credential once auth is enabled", async () => {
+      const { app, port } = await buildAndListen();
+      const { sessionId } = await createProjectAndSession(app, {
+        authorization: `Bearer ${TEST_TOKEN}`,
+      });
+
+      const ws = new NodeWebSocket(
+        `ws://127.0.0.1:${port}/ws/terminal?sessionId=${sessionId}&cols=80&rows=24`,
+      );
+      expect(await waitForNodeWsOpenOrClose(ws)).toBe("close");
+
+      await app.close();
+    });
+
+    it("rejects a /ws/terminal upgrade with a wrong bearer token", async () => {
+      const { app, port } = await buildAndListen();
+      const { sessionId } = await createProjectAndSession(app, {
+        authorization: `Bearer ${TEST_TOKEN}`,
+      });
+
+      const ws = new NodeWebSocket(
+        `ws://127.0.0.1:${port}/ws/terminal?sessionId=${sessionId}&cols=80&rows=24`,
+        { headers: { authorization: "Bearer wrong-token" } },
+      );
+      expect(await waitForNodeWsOpenOrClose(ws)).toBe("close");
+
+      await app.close();
+    });
+
+    it("accepts a /ws/terminal upgrade with a valid bearer token", async () => {
+      const { app, port } = await buildAndListen();
+      const { sessionId } = await createProjectAndSession(app, {
+        authorization: `Bearer ${TEST_TOKEN}`,
+      });
+
+      const ws = new NodeWebSocket(
+        `ws://127.0.0.1:${port}/ws/terminal?sessionId=${sessionId}&cols=80&rows=24`,
+        { headers: { authorization: `Bearer ${TEST_TOKEN}` } },
+      );
+      expect(await waitForNodeWsOpenOrClose(ws)).toBe("open");
+
+      ws.close();
+      await app.close();
+    });
+
+    it("accepts a /ws/terminal upgrade with a valid session cookie (the login flow's own credential)", async () => {
+      const { app, port } = await buildAndListen();
+      const { sessionId } = await createProjectAndSession(app, {
+        authorization: `Bearer ${TEST_TOKEN}`,
+      });
+
+      const cookieValue = createSessionCookieValue(TEST_SECRET);
+      const ws = new NodeWebSocket(
+        `ws://127.0.0.1:${port}/ws/terminal?sessionId=${sessionId}&cols=80&rows=24`,
+        { headers: { cookie: `${SESSION_COOKIE_NAME}=${cookieValue}` } },
+      );
+      expect(await waitForNodeWsOpenOrClose(ws)).toBe("open");
+
+      ws.close();
+      await app.close();
+    });
   });
 });

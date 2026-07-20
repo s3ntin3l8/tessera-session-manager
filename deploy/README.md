@@ -99,6 +99,30 @@ placeholders there need real values only you have:
 3. **Your Traefik dynamic-config directory path**, so `traefik-dynamic.yml`
    ends up somewhere Traefik's file provider actually watches.
 
+## Optional: in-process auth (issue #19)
+
+The forwardAuth middleware above is still the recommended posture — it
+rejects unauthenticated requests before they ever reach this process. But
+it's no longer the only option: setting `TESSERA_AUTH_TOKEN` (and
+`TESSERA_SESSION_SECRET`, required alongside it) in this app's own `.env`
+turns on an in-process shared-token gate — a single token/password screen
+in front of the dashboard, checked on every `/api/*` route and the
+`/ws/terminal` upgrade, independent of anything Traefik does. It's off by
+default (a clear warning logs at boot when unset), and it **composes with**
+forwardAuth rather than replacing it — run both for defense in depth, or
+either alone (in-process auth alone is the right choice for a bare
+deployment with no gateway at all; forwardAuth alone if you'd rather not
+manage a second credential).
+
+One gap worth knowing: **this in-process gate does not extend to the
+preview subdomain** (`preview-<slug>.<PREVIEW_BASE_HOST>` below) — a
+same-origin session cookie can't reach a different subdomain, and a
+browser `<iframe>` can't attach a bearer token either, so gating that
+surface with this mechanism would just break every preview once auth is
+turned on. The preview router still needs its own forwardAuth middleware
+(point 4 in that section below) regardless of whether in-process auth is
+enabled for the main dashboard.
+
 ## Optional: in-dashboard previews (issue #28)
 
 See also [`docs/browser-previews.md`](../docs/browser-previews.md) for the

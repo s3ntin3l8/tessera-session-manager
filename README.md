@@ -53,8 +53,12 @@ CI/CD. Frontend: React + [dockview](https://dockview.dev/) (tiled splits/tabs)
 > drag-to-reorder, a per-project dock, session status badges, a browser
 > preview panel, a GitHub status widget, and a Settings panel (including
 > host management and integrations) — and is under active polish, not
-> frozen. Not yet built: any in-app auth (access is delegated to the
-> external Traefik + Authentik forwardAuth, by design). Native deployment
+> frozen. Auth is now optional and in-process, not only gateway-delegated:
+> `TESSERA_AUTH_TOKEN` gates every `/api/*` route and the `/ws/terminal`
+> upgrade with a shared token (issue #19) — off by default (a clear boot
+> warning logs when it's unset), and composable with, not a replacement
+> for, an external Traefik + Authentik forwardAuth gateway. Native OIDC
+> login (issue #30) is not yet built. Native deployment
 > (systemd/Traefik/Authentik) is drafted under `deploy/` but not yet
 > installed anywhere — see `deploy/README.md`.
 
@@ -89,22 +93,26 @@ curl localhost:3000/api/projects
 - `src/plugins/` — `env` (validated config), `logging`, `security` (helmet,
   rate-limit, CORS, and the preview subdomains' `frame-src` CSP entry), `db`
   (migrations + `app.db`/`app.encryption` decorators), `pty` (`app.pty`
-  session manager + periodic exited-session reconciler), `websocket`,
-  `static` (serves the built frontend once it exists), `preview-proxy` (the
-  subdomain reverse proxy + HMR websocket proxying for browser previews —
-  see [`docs/browser-previews.md`](docs/browser-previews.md); fully inert
-  until `PREVIEW_BASE_HOST` is set).
-- `src/routes/` — `health` (`/health`, `/ready`), `users` (template-inherited
-  example CRUD), `root` (placeholder `/`, disabled once the frontend build
-  exists — also template-inherited), `projects` (CRUD + discovery +
-  per-project actions/dock), `sessions` (durable terminal sessions),
-  `workspaces` (named/grouped saved layouts), `groups` (workspace groups),
-  `agents` (installed shell/AI-CLI detection), `actions` (global launcher
-  presets), `server-info` (`GET /api/server-info`, read-only diagnostics for
-  Settings → Server info), `terminal` (`/ws/terminal` PTY bridge), `hosts`
-  (remote-host registry for multi-host sessions), `internal` (an `agent`
-  process's token-gated API, called by a `primary`'s host routing),
-  `integrations` (GitHub PAT/device-flow connect — see
+  session manager + periodic exited-session reconciler), `websocket`, `auth`
+  (optional in-process shared-token gate, issue #19 — a global `onRequest`
+  hook covering every `/api/*` route and the `/ws/terminal` upgrade; inert
+  until `TESSERA_AUTH_TOKEN` is set), `static` (serves the built frontend
+  once it exists), `preview-proxy` (the subdomain reverse proxy + HMR
+  websocket proxying for browser previews — see
+  [`docs/browser-previews.md`](docs/browser-previews.md); fully inert until
+  `PREVIEW_BASE_HOST` is set).
+- `src/routes/` — `health` (`/health`, `/ready`), `auth` (`/api/auth/login`,
+  `/logout`, `/me` — the `auth` plugin's login endpoint, issue #19), `users`
+  (template-inherited example CRUD), `root` (placeholder `/`, disabled once
+  the frontend build exists — also template-inherited), `projects` (CRUD +
+  discovery + per-project actions/dock), `sessions` (durable terminal
+  sessions), `workspaces` (named/grouped saved layouts), `groups` (workspace
+  groups), `agents` (installed shell/AI-CLI detection), `actions` (global
+  launcher presets), `server-info` (`GET /api/server-info`, read-only
+  diagnostics for Settings → Server info), `terminal` (`/ws/terminal` PTY
+  bridge), `hosts` (remote-host registry for multi-host sessions), `internal`
+  (an `agent` process's token-gated API, called by a `primary`'s host
+  routing), `integrations` (GitHub PAT/device-flow connect — see
   [`docs/github-integration.md`](docs/github-integration.md)), `previews`
   (create/read/delete browser previews — see
   [`docs/browser-previews.md`](docs/browser-previews.md)).
