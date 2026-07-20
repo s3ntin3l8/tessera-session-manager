@@ -218,9 +218,10 @@ interface DashboardState {
   // Deliberately NOT implemented by looping setWorkspaceGroup — that would
   // refetch once per row instead of once total.
   reorderWorkspaces: (updates: ReorderUpdate[]) => Promise<void>;
-  // Fire-and-forget from App.tsx's debounced autosave — deliberately does
-  // not refresh the workspaces list afterward (called frequently; the
-  // store's own layout copy isn't read by anything that needs it fresh).
+  // Fire-and-forget from App.tsx's debounced autosave — saves the layout
+  // and patches the local workspaces array with the server's response so
+  // the restore effect (App.tsx:281) reads fresh data on workspace switch.
+  // Does NOT trigger a full workspaces refresh (called frequently).
   saveWorkspaceLayout: (id: number, layout: Record<string, unknown>) => Promise<void>;
   setActiveWorkspaceId: (id: number | null) => void;
   createGroup: (name: string, color?: string) => Promise<Group>;
@@ -422,7 +423,14 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
     },
 
     saveWorkspaceLayout: async (id, layout) => {
-      await api.saveWorkspaceLayout(id, layout);
+      try {
+        const updated = await api.saveWorkspaceLayout(id, layout);
+        set((state) => ({
+          workspaces: state.workspaces.map((w) => (w.id === id ? updated : w)),
+        }));
+      } catch (err) {
+        console.error("[store] failed to save workspace layout:", err);
+      }
     },
 
     setActiveWorkspaceId: (id) => {
