@@ -46,7 +46,13 @@ let fakeWsSend: ReturnType<typeof vi.fn>;
 function oscRegex() {
   const ESC = String.fromCharCode(27);
   const BEL = String.fromCharCode(7);
-  return new RegExp(`^${ESC}\\]10;#[\\da-f]{6}${BEL}${ESC}\\]11;#[\\da-f]{6}${BEL}$`, "i");
+  // OSC 10/11 SET followed by the DEC `\x1b[?997;1n`/`;2n` "color scheme
+  // update" notification opencode listens for (issue #99) — always appended
+  // together as one push.
+  return new RegExp(
+    `^${ESC}\\]10;#[\\da-f]{6}${BEL}${ESC}\\]11;#[\\da-f]{6}${BEL}${ESC}\\[\\?997;[12]n$`,
+    "i",
+  );
 }
 
 // Once the fake socket reports OPEN, the component's own "open" handler also
@@ -378,6 +384,24 @@ describe("TerminalPane OSC push", () => {
 
     await vi.waitFor(() => {
       expect(fakeWsSend).not.toHaveBeenCalled();
+    });
+  });
+
+  it("appends the DEC 997 notification matching the resolved mode (issue #99)", async () => {
+    stubFakeWebSocket(true);
+    renderPane();
+
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+
+    useDashboardStore.setState({ theme: "light" as Theme });
+    await waitFor(() => {
+      expect(decodedOscSends().some((s) => s.endsWith("\x1b[?997;2n"))).toBe(true);
+    });
+
+    fakeWsSend.mockClear();
+    useDashboardStore.setState({ theme: "dark" as Theme });
+    await waitFor(() => {
+      expect(decodedOscSends().some((s) => s.endsWith("\x1b[?997;1n"))).toBe(true);
     });
   });
 });

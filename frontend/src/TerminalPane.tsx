@@ -632,22 +632,26 @@ export function TerminalPane(props: {
     term.options.fontFamily = `'${terminalSettings.fontFamily}', 'Geist Mono', monospace`;
     const xtermTheme = buildXtermTheme(terminalSettings.colorScheme, theme);
     term.options.theme = xtermTheme;
-    // Notify the running program of a theme change by pushing OSC color SET
-    // sequences through the PTY (arrives on the program's STDIN). Modern CLI
-    // tools that implement terminal-aware theming (opencode) read these from
-    // stdin and update their internal color scheme. Both #rrggbb and
-    // rgb:rr/gg/bb are valid colour-spec formats per OSC 10/11; we send hex
-    // (matching xterm's own colour storage) as the more commonly documented
-    // form. Harmless for tools that don't handle them — the bytes are
-    // consumed silently in raw mode. Gated behind a theme comparison to avoid
-    // re-sending identical bytes on unrelated pref changes (font size, cursor
-    // blink, etc.). When the socket isn't OPEN (connecting/reconnecting/
-    // failed), the bytes are queued in pendingOscRef so the socket open
-    // handler above drains them when the connection is restored — otherwise a
-    // theme toggle during a reconnect would be silently lost.
+    // Notify the running program of a theme change by pushing color
+    // sequences through the PTY (arrives on the program's STDIN): OSC 10/11
+    // SET (foreground/background) for tools that read it directly from
+    // stdin, plus a DEC `\x1b[?997;1n`/`;2n` "color scheme update"
+    // notification carrying the resolved dark/light mode for tools that
+    // instead react to that and re-query (e.g. opencode — see issue #99 and
+    // the PR description for the full mechanism). Both are harmless for
+    // tools that don't handle them — unknown OSC/CSI is consumed silently in
+    // raw mode. Gated behind a theme comparison to avoid re-sending
+    // identical bytes on unrelated pref changes (font size, cursor blink,
+    // etc.). When the socket isn't OPEN (connecting/reconnecting/failed),
+    // the bytes are queued in pendingOscRef so the socket open handler above
+    // drains them when the connection is restored — otherwise a theme
+    // toggle during a reconnect would be silently lost.
     if (theme !== prevThemeRef.current) {
+      const dec997Notification = theme === "light" ? "\x1b[?997;2n" : "\x1b[?997;1n";
       const oscPush =
-        `\x1b]10;${xtermTheme.foreground}\x07` + `\x1b]11;${xtermTheme.background}\x07`;
+        `\x1b]10;${xtermTheme.foreground}\x07` +
+        `\x1b]11;${xtermTheme.background}\x07` +
+        dec997Notification;
       const ws = wsRef.current;
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(new TextEncoder().encode(oscPush));
