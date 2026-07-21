@@ -256,7 +256,14 @@ function renderPane() {
       },
       sidebarDensity: "comfortable",
       projectRoots: [],
-      launchers: { defaultShell: "bash", defaultAgent: "claude", hiddenAgents: [] },
+      launchers: {
+        defaultShell: "bash",
+        defaultAgent: "claude",
+        hiddenAgents: [],
+        worktreeMode: false,
+        worktreePrefix: "tessera/{project}-{id}",
+        worktreeDir: "",
+      },
       notifications: {
         attentionAlerts: false,
         channels: { browser: false, sound: false },
