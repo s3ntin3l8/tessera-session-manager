@@ -550,8 +550,8 @@ export class Session {
   }
 
   write(data: string): void {
-    this.lastUserInputAt = Date.now();
     this.ptyProcess?.write(data);
+    this.lastUserInputAt = Date.now();
   }
 
   resize(cols: number, rows: number): void {
@@ -634,9 +634,9 @@ export class Session {
       // Recent output that closely follows a keystroke is more likely echo
       // or a redraw of that input than autonomous work — see
       // USER_INPUT_ECHO_MS's docstring.
-      const echoingInput =
+      const withinEchoWindow =
         this.lastUserInputAt !== null && Date.now() - this.lastUserInputAt < USER_INPUT_ECHO_MS;
-      activity = recent && sustained && !echoingInput ? "working" : "idle";
+      activity = recent && sustained && !withinEchoWindow ? "working" : "idle";
     }
     return {
       id: this.id,
