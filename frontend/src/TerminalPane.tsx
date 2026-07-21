@@ -713,7 +713,28 @@ export function TerminalPane(props: {
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      {
+        // Padding + border-box (not the outer wrapper) is deliberate — see
+        // issue #91: `.xterm` is a normal-flow child of whatever element
+        // `term.open()` is called on, so padding here visually insets the
+        // rendered terminal on all sides, and FitAddon.fit() reads this same
+        // element's content-box width/height, so the computed cols/rows
+        // already account for it (no clipping/overflow). border-box keeps
+        // this div's own occupied size at exactly 100% of its parent —
+        // without it, width:100% + padding would add the padding on top and
+        // overflow the pane. The four absolutely-positioned overlay siblings
+        // below resolve their offsets against the *outer* `position:
+        // relative` wrapper, not this div, so they're unaffected either way.
+      }
+      <div
+        ref={containerRef}
+        style={{
+          width: "100%",
+          height: "100%",
+          padding: `${terminalSettings.padding}px`,
+          boxSizing: "border-box",
+        }}
+      />
       <input
         ref={fileInputRef}
         type="file"

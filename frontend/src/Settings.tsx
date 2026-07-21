@@ -127,6 +127,7 @@ const SEARCH_INDEX: Array<{ section: SettingsSection; text: string }> = [
   { section: "appearance", text: "theme dark light system" },
   { section: "appearance", text: "terminal font family geist jetbrains ibm plex sf mono menlo" },
   { section: "appearance", text: "font size" },
+  { section: "appearance", text: "pane padding margin inset panel edge" },
   { section: "appearance", text: "color scheme tokyo night dracula solarized gruvbox one dark" },
   { section: "appearance", text: "cursor style block bar underline blink" },
   { section: "appearance", text: "sidebar density comfortable compact" },
@@ -288,6 +289,15 @@ function AppearanceSection() {
           value={t.fontSize}
           format={(v) => `${v}px`}
           onChange={(v) => updateSettings({ terminal: { fontSize: v } })}
+        />
+      </Row>
+      <Row label="Pane padding" desc="Inset between the panel edge and terminal content.">
+        <Slider
+          min={0}
+          max={16}
+          value={t.padding}
+          format={(v) => `${v}px`}
+          onChange={(v) => updateSettings({ terminal: { padding: v } })}
         />
       </Row>
 
