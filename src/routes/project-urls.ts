@@ -196,9 +196,11 @@ export async function projectUrlsRoute(app: FastifyInstance) {
         }
       }
 
-      for (let i = 0; i < ids.length; i++) {
-        app.db.update(projectUrls).set({ order: i }).where(eq(projectUrls.id, ids[i])).run();
-      }
+      app.db.transaction((tx) => {
+        for (let i = 0; i < ids.length; i++) {
+          tx.update(projectUrls).set({ order: i }).where(eq(projectUrls.id, ids[i])).run();
+        }
+      });
 
       reply.code(204);
     },

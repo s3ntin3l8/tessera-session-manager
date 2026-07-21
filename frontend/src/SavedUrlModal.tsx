@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { api } from "./api.js";
 import { useDashboardStore } from "./store.js";
 import { CloseIcon } from "./icons.js";
 
@@ -6,6 +7,15 @@ interface SavedUrlModalProps {
   projectId: number;
   projectName: string;
   onClose: () => void;
+}
+
+function isValidUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 export function SavedUrlModal({ projectId, projectName, onClose }: SavedUrlModalProps) {
@@ -25,6 +35,7 @@ export function SavedUrlModal({ projectId, projectName, onClose }: SavedUrlModal
 
   const handleAdd = async () => {
     if (!newLabel.trim() || !newUrl.trim()) return;
+    if (!isValidUrl(newUrl.trim())) return;
     try {
       await addProjectUrl(projectId, newLabel.trim(), newUrl.trim());
       setNewLabel("");
@@ -36,25 +47,33 @@ export function SavedUrlModal({ projectId, projectName, onClose }: SavedUrlModal
 
   const handleUpdate = async (urlId: number) => {
     if (!editLabel.trim() || !editUrl.trim()) return;
+    if (!isValidUrl(editUrl.trim())) return;
     await updateProjectUrl(projectId, urlId, { label: editLabel.trim(), url: editUrl.trim() });
     setEditingId(null);
   };
 
-  const toggleFavorite = (urlId: number, current: boolean) => {
-    void updateProjectUrl(projectId, urlId, { favorite: !current });
+  const toggleFavorite = async (urlId: number, current: boolean) => {
+    try {
+      await updateProjectUrl(projectId, urlId, { favorite: !current });
+    } catch {
+      void refreshProjectUrls(projectId);
+    }
   };
 
-  const handleDelete = (urlId: number) => {
-    void deleteProjectUrl(projectId, urlId);
+  const handleDelete = async (urlId: number) => {
+    try {
+      await deleteProjectUrl(projectId, urlId);
+    } catch {
+      void refreshProjectUrls(projectId);
+    }
   };
 
-  const moveItem = (index: number, direction: "up" | "down") => {
+  const moveItem = async (index: number, direction: "up" | "down") => {
     const newIndex = direction === "up" ? index - 1 : index + 1;
     if (newIndex < 0 || newIndex >= urls.length) return;
     const ids = urls.map((u) => u.id);
     const [moved] = ids.splice(index, 1);
     ids.splice(newIndex, 0, moved);
-    // Store doesn't have reorder yet — just optimistic local
     useDashboardStore.setState((state) => {
       const updated = [...urls];
       const [item] = updated.splice(index, 1);
@@ -63,7 +82,14 @@ export function SavedUrlModal({ projectId, projectName, onClose }: SavedUrlModal
         projectUrls: { ...state.projectUrls, [projectId]: updated },
       };
     });
+    try {
+      await api.reorderProjectUrls(projectId, ids);
+    } catch {
+      void refreshProjectUrls(projectId);
+    }
   };
+
+  const addDisabled = !newLabel.trim() || !newUrl.trim() || !isValidUrl(newUrl.trim());
 
   return (
     <div className="overlay-backdrop" onClick={onClose}>
@@ -89,7 +115,7 @@ export function SavedUrlModal({ projectId, projectName, onClose }: SavedUrlModal
               onChange={(e) => setNewUrl(e.target.value)}
               placeholder="https://example.com"
             />
-            <button className="saved-url-add-btn" onClick={handleAdd}>
+            <button className="saved-url-add-btn" onClick={handleAdd} disabled={addDisabled}>
               Add
             </button>
           </div>
@@ -130,7 +156,11 @@ export function SavedUrlModal({ projectId, projectName, onClose }: SavedUrlModal
                       value={editUrl}
                       onChange={(e) => setEditUrl(e.target.value)}
                     />
-                    <button className="saved-url-add-btn" onClick={() => handleUpdate(u.id)}>
+                    <button
+                      className="saved-url-add-btn"
+                      disabled={!editLabel.trim() || !editUrl.trim() || !isValidUrl(editUrl.trim())}
+                      onClick={() => handleUpdate(u.id)}
+                    >
                       Save
                     </button>
                     <button className="saved-url-cancel-btn" onClick={() => setEditingId(null)}>

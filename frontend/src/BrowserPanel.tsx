@@ -26,6 +26,23 @@ function isDangerousIframeSrc(url: string): boolean {
   }
 }
 
+async function resolvePreviewUrl(targetUrl: string): Promise<{ src: string } | { error: string }> {
+  if (isDangerousIframeSrc(targetUrl)) {
+    return { error: "This URL's scheme can't be previewed here." };
+  }
+  try {
+    const info = await api.getServerInfo();
+    if (!info.previewsEnabled || !info.previewBaseHost) {
+      return { src: targetUrl };
+    }
+    const preview = await api.createExternalPreview(targetUrl);
+    const scheme = window.location.protocol;
+    return { src: `${scheme}//preview-${preview.slug}.${info.previewBaseHost}/` };
+  } catch (err: unknown) {
+    return { error: err instanceof ApiError ? err.message : "Couldn't open this URL." };
+  }
+}
+
 export function BrowserPanel({ params }: { params: BrowserPanelParams }) {
   const isExternal = params.kind === "external";
   const { projects, projectUrls, refreshProjectUrls } = useDashboardStore();
@@ -38,8 +55,8 @@ export function BrowserPanel({ params }: { params: BrowserPanelParams }) {
   const [reloadKey, setReloadKey] = useState(0);
   const [currentUrl, setCurrentUrl] = useState(params.url ?? "");
   const [addressInput, setAddressInput] = useState(params.url ?? "");
-  const [savedUrl, setSavedUrl] = useState<string | null>(null);
-  const [savedUrlLabel, setSavedUrlLabel] = useState<string | null>(null);
+  const [activeSavedUrlId, setActiveSavedUrlId] = useState<number | null>(null);
+  const [activeSavedUrlLabel, setActiveSavedUrlLabel] = useState<string | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -51,28 +68,29 @@ export function BrowserPanel({ params }: { params: BrowserPanelParams }) {
   }, [projectId, refreshProjectUrls]);
 
   useEffect(() => {
-    if (isExternal && savedUrl) return;
+    if (isExternal && activeSavedUrlId !== null) return;
     if (isExternal && !currentUrl) return;
-    if (!isExternal && !savedUrl && !devServerUrl) return;
-    if (!isExternal && savedUrl) return;
+    if (!isExternal && activeSavedUrlId !== null) return;
+    if (!isExternal && !devServerUrl) return;
 
     let cancelled = false;
+
+    const targetUrl = isExternal ? currentUrl : devServerUrl;
+    if (!targetUrl) return;
+
     api
       .getServerInfo()
       .then((info) => {
         if (cancelled) return;
+        if (isDangerousIframeSrc(targetUrl)) {
+          setFetchState({
+            status: "unavailable",
+            message: "This URL's scheme can't be previewed here.",
+          });
+          return;
+        }
         if (!info.previewsEnabled || !info.previewBaseHost) {
-          const directUrl = isExternal ? currentUrl : devServerUrl;
-          if (directUrl && isDangerousIframeSrc(directUrl)) {
-            setFetchState({
-              status: "unavailable",
-              message: "This URL's scheme can't be previewed here.",
-            });
-            return;
-          }
-          if (directUrl) {
-            setFetchState({ status: "ready", src: directUrl });
-          }
+          setFetchState({ status: "ready", src: targetUrl });
           return;
         }
         const previewPromise =
@@ -109,46 +127,25 @@ export function BrowserPanel({ params }: { params: BrowserPanelParams }) {
     projectId,
     devServerUrl,
     reloadKey,
-    savedUrl,
+    activeSavedUrlId,
   ]);
 
-  const navigateToSavedUrl = (url: string, label: string) => {
-    setSavedUrl(url);
-    setSavedUrlLabel(label);
+  const navigateToSavedUrl = async (id: number, url: string, label: string) => {
+    setActiveSavedUrlId(id);
+    setActiveSavedUrlLabel(label);
     setDropdownOpen(false);
-    if (isDangerousIframeSrc(url)) {
-      setFetchState({
-        status: "unavailable",
-        message: "This URL's scheme can't be previewed here.",
-      });
-      return;
+    setFetchState({ status: "loading" });
+    const result = await resolvePreviewUrl(url);
+    if ("error" in result) {
+      setFetchState({ status: "unavailable", message: result.error });
+    } else {
+      setFetchState({ status: "ready", src: result.src });
     }
-    api
-      .getServerInfo()
-      .then((info) => {
-        if (!info.previewsEnabled || !info.previewBaseHost) {
-          setFetchState({ status: "ready", src: url });
-          return;
-        }
-        return api.createExternalPreview(url).then((preview) => {
-          const scheme = window.location.protocol;
-          setFetchState({
-            status: "ready",
-            src: `${scheme}//preview-${preview.slug}.${info.previewBaseHost}/`,
-          });
-        });
-      })
-      .catch((err: unknown) => {
-        setFetchState({
-          status: "unavailable",
-          message: err instanceof ApiError ? err.message : "Couldn't open this URL.",
-        });
-      });
   };
 
   const navigateToDevServer = () => {
-    setSavedUrl(null);
-    setSavedUrlLabel(null);
+    setActiveSavedUrlId(null);
+    setActiveSavedUrlLabel(null);
     setDropdownOpen(false);
     setReloadKey((k) => k + 1);
   };
@@ -164,7 +161,7 @@ export function BrowserPanel({ params }: { params: BrowserPanelParams }) {
   }, [dropdownOpen]);
 
   const state: BrowserPanelState =
-    !isExternal && !savedUrl && !devServerUrl
+    !isExternal && activeSavedUrlId === null && !devServerUrl
       ? {
           status: "unavailable",
           message: detectedDevServerPort
@@ -178,8 +175,8 @@ export function BrowserPanel({ params }: { params: BrowserPanelParams }) {
   const navigate = () => {
     const trimmed = addressInput.trim();
     if (!trimmed) return;
-    setSavedUrl(null);
-    setSavedUrlLabel(null);
+    setActiveSavedUrlId(null);
+    setActiveSavedUrlLabel(null);
     setCurrentUrl(trimmed);
   };
 
@@ -190,7 +187,7 @@ export function BrowserPanel({ params }: { params: BrowserPanelParams }) {
     if (state.status === "unavailable") {
       return <div className="browser-panel-empty">{state.message}</div>;
     }
-    const currentLabel = savedUrlLabel ?? "Dev server";
+    const currentLabel = activeSavedUrlLabel ?? "Dev server";
     const currentSrc = state.status === "ready" ? state.src : "";
     return (
       <div className="browser-panel">
@@ -206,7 +203,7 @@ export function BrowserPanel({ params }: { params: BrowserPanelParams }) {
             {dropdownOpen && (
               <div className="browser-panel-dropdown-menu">
                 <button
-                  className={`browser-panel-dropdown-item${!savedUrl ? " active" : ""}`}
+                  className={`browser-panel-dropdown-item${activeSavedUrlId === null ? " active" : ""}`}
                   onClick={navigateToDevServer}
                 >
                   Dev server
@@ -215,8 +212,8 @@ export function BrowserPanel({ params }: { params: BrowserPanelParams }) {
                 {savedUrls.map((u) => (
                   <button
                     key={u.id}
-                    className={`browser-panel-dropdown-item${savedUrl === u.url ? " active" : ""}`}
-                    onClick={() => navigateToSavedUrl(u.url, u.label)}
+                    className={`browser-panel-dropdown-item${activeSavedUrlId === u.id ? " active" : ""}`}
+                    onClick={() => navigateToSavedUrl(u.id, u.url, u.label)}
                   >
                     {u.favorite && <span className="browser-panel-dropdown-star">★</span>}
                     {u.label}
@@ -236,7 +233,7 @@ export function BrowserPanel({ params }: { params: BrowserPanelParams }) {
             )}
           </div>
           <span className="browser-panel-url" title={currentSrc}>
-            {savedUrl ?? devServerUrl ?? ""}
+            {state.src}
           </span>
           <button
             className="browser-panel-reload"
