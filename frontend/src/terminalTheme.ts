@@ -37,6 +37,13 @@ function darken(hex: string, amount: number): string {
   return `#${[r, g, b].map((c) => c.toString(16).padStart(2, "0")).join("")}`;
 }
 
+// Medium-gray, readable on both a dark and a light background as-is — the
+// one ANSI color that intentionally does NOT change between themes (see the
+// file-level comment above). Exported (rather than a private magic string)
+// so terminalTheme.test.ts's assertions reference the same value instead of
+// duplicating the literal.
+export const BRIGHT_BLACK = "#666670";
+
 export function buildXtermTheme(schemeId: string, theme: "dark" | "light" = "dark"): ITheme {
   const scheme = getTerminalScheme(schemeId);
   const bg = theme === "light" ? scheme.bgLight : scheme.bg;
@@ -64,7 +71,7 @@ export function buildXtermTheme(schemeId: string, theme: "dark" | "light" = "dar
     magenta: scheme.magenta,
     cyan: scheme.cyan,
     white: isLight ? "#1c1c1e" : "#c7c7cc",
-    brightBlack: "#666670",
+    brightBlack: BRIGHT_BLACK,
     brightRed: intensify(scheme.red, 0.2),
     brightGreen: intensify(scheme.green, 0.2),
     brightYellow: intensify(scheme.yellow, 0.2),

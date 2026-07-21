@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildXtermTheme } from "./terminalTheme.js";
+import { buildXtermTheme, BRIGHT_BLACK } from "./terminalTheme.js";
 
 describe("buildXtermTheme", () => {
   it("uses the scheme's dark bg/fg when theme is 'dark' (default)", () => {
@@ -32,12 +32,12 @@ describe("buildXtermTheme", () => {
   it("keeps brightBlack medium-gray across themes, but resolves brightWhite to fg in light mode", () => {
     const dark = buildXtermTheme("default", "dark");
     const light = buildXtermTheme("default", "light");
-    expect(dark.brightBlack).toBe("#666670");
+    expect(dark.brightBlack).toBe(BRIGHT_BLACK);
     expect(dark.brightWhite).toBe("#ffffff");
     // brightBlack stays medium gray in both modes (visible on both
     // backgrounds); brightWhite would be nearly invisible on a light
     // background, so it resolves to the scheme's light-mode foreground.
-    expect(light.brightBlack).toBe("#666670");
+    expect(light.brightBlack).toBe(BRIGHT_BLACK);
     expect(light.brightWhite).toBe(light.foreground);
     expect(light.brightWhite).not.toBe("#ffffff");
   });
@@ -61,6 +61,11 @@ describe("buildXtermTheme", () => {
     const dark = buildXtermTheme("dracula", "dark");
     const light = buildXtermTheme("dracula", "light");
 
+    // Unweighted RGB sum, not real (perceptual) luminance — fine here since
+    // this only needs to preserve ordering for a greater-than/less-than
+    // comparison, not measure an actual ratio. If this test ever needs to
+    // assert a specific contrast ratio, switch to Rec. 709 luma
+    // (0.2126R + 0.7152G + 0.0722B) instead.
     const luminance = (hex: string) => {
       const n = parseInt(hex.slice(1), 16);
       return ((n >> 16) & 0xff) + ((n >> 8) & 0xff) + (n & 0xff);
