@@ -273,6 +273,12 @@ export interface AppSettings {
   terminal: {
     fontFamily: string;
     fontSize: number;
+    // Inner inset (px) between the dockview panel edge and the rendered
+    // terminal content, applied on all four sides — issue #91: xterm.js
+    // renders flush against the panel edge by default (unlike CLIs such as
+    // opencode that reserve their own internal margin), so this gives every
+    // CLI the same breathing room a real terminal emulator already provides.
+    padding: number;
     colorScheme: string;
     cursorStyle: CursorStyle;
     cursorBlink: boolean;
@@ -332,6 +338,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminal: {
     fontFamily: "Geist Mono",
     fontSize: 14,
+    // Mirrors settings.ts's DEFAULT_SETTINGS.
+    padding: 4,
     colorScheme: "default",
     cursorStyle: "block",
     cursorBlink: true,

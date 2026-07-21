@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, waitFor, fireEvent } from "@testing-library/react";
 import { act } from "react";
 import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import type { Theme } from "./store.js";
 import { useDashboardStore } from "./store.js";
 import { TerminalPane } from "./TerminalPane.js";
@@ -45,7 +46,13 @@ let fakeWsSend: ReturnType<typeof vi.fn>;
 function oscRegex() {
   const ESC = String.fromCharCode(27);
   const BEL = String.fromCharCode(7);
-  return new RegExp(`^${ESC}\\]10;#[\\da-f]{6}${BEL}${ESC}\\]11;#[\\da-f]{6}${BEL}$`, "i");
+  // OSC 10/11 SET followed by the DEC `\x1b[?997;1n`/`;2n` "color scheme
+  // update" notification opencode listens for (issue #99) — always appended
+  // together as one push.
+  return new RegExp(
+    `^${ESC}\\]10;#[\\da-f]{6}${BEL}${ESC}\\]11;#[\\da-f]{6}${BEL}${ESC}\\[\\?997;[12]n$`,
+    "i",
+  );
 }
 
 // Once the fake socket reports OPEN, the component's own "open" handler also
@@ -175,6 +182,15 @@ function getLatestTermInstance() {
   };
 }
 
+// Same pattern as getLatestTermInstance above, for the mocked FitAddon
+// (see the @xterm/addon-fit mock) — used to assert a settings change
+// re-triggers fit() without caring about call order relative to other
+// effects.
+function getLatestFitAddonInstance() {
+  const results = (FitAddon as unknown as ReturnType<typeof vi.fn>).mock.results;
+  return results[results.length - 1]!.value as { fit: ReturnType<typeof vi.fn> };
+}
+
 beforeEach(() => {
   oscHandlers.clear();
   localStorage.clear();
@@ -202,6 +218,7 @@ function renderPane() {
       terminal: {
         fontFamily: "Geist Mono",
         fontSize: 14,
+        padding: 4,
         colorScheme: "default",
         cursorStyle: "block",
         cursorBlink: true,
@@ -253,6 +270,52 @@ describe("TerminalPane repaint registry (issue #107)", () => {
     unmount();
 
     expect(unregisterTerminalRepaint).toHaveBeenCalledExactlyOnceWith(1);
+  });
+});
+
+describe("TerminalPane pane padding (issue #91)", () => {
+  it("applies the configured padding and border-box sizing to the terminal container", () => {
+    stubFakeWebSocket(true);
+    const { container } = renderPane();
+
+    // The containerRef div is the one xterm opens into — distinguish it
+    // from the outer position:relative wrapper by its inline padding, which
+    // only this div ever sets.
+    const containerDiv = container.querySelector("div[style*='padding']") as HTMLDivElement;
+    expect(containerDiv).toBeTruthy();
+    expect(containerDiv.style.padding).toBe("4px");
+    expect(containerDiv.style.boxSizing).toBe("border-box");
+  });
+
+  it("re-fits the terminal when the padding setting changes", async () => {
+    stubFakeWebSocket(true);
+    renderPane();
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+
+    const fitAddon = getLatestFitAddonInstance();
+    fitAddon.fit.mockClear();
+
+    act(() => {
+      useDashboardStore.setState((s) => ({
+        settings: { ...s.settings, terminal: { ...s.settings.terminal, padding: 10 } },
+      }));
+    });
+
+    await waitFor(() => expect(fitAddon.fit).toHaveBeenCalled());
+  });
+
+  it("reflects a padding change in the rendered container's inline style", () => {
+    stubFakeWebSocket(true);
+    const { container } = renderPane();
+
+    act(() => {
+      useDashboardStore.setState((s) => ({
+        settings: { ...s.settings, terminal: { ...s.settings.terminal, padding: 0 } },
+      }));
+    });
+
+    const containerDiv = container.querySelector("div[style*='box-sizing']") as HTMLDivElement;
+    expect(containerDiv.style.padding).toBe("0px");
   });
 });
 
@@ -321,6 +384,24 @@ describe("TerminalPane OSC push", () => {
 
     await vi.waitFor(() => {
       expect(fakeWsSend).not.toHaveBeenCalled();
+    });
+  });
+
+  it("appends the DEC 997 notification matching the resolved mode (issue #99)", async () => {
+    stubFakeWebSocket(true);
+    renderPane();
+
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+
+    useDashboardStore.setState({ theme: "light" as Theme });
+    await waitFor(() => {
+      expect(decodedOscSends().some((s) => s.endsWith("\x1b[?997;2n"))).toBe(true);
+    });
+
+    fakeWsSend.mockClear();
+    useDashboardStore.setState({ theme: "dark" as Theme });
+    await waitFor(() => {
+      expect(decodedOscSends().some((s) => s.endsWith("\x1b[?997;1n"))).toBe(true);
     });
   });
 });

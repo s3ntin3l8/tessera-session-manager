@@ -66,12 +66,13 @@ describe("deepMerge", () => {
 describe("sanitizeSettings", () => {
   it("clamps out-of-range and non-finite numeric fields to their defaults", () => {
     const dirty = mergeSettings({
-      terminal: { fontSize: 999, scrollback: -1, reconnect: { maxAttempts: 0 } },
+      terminal: { fontSize: 999, padding: -1, scrollback: -1, reconnect: { maxAttempts: 0 } },
       notifications: { idleThresholdSeconds: 0 },
       sessions: { reconcileIntervalSeconds: 0 },
     });
 
     expect(dirty.terminal.fontSize).toBe(DEFAULT_SETTINGS.terminal.fontSize);
+    expect(dirty.terminal.padding).toBe(DEFAULT_SETTINGS.terminal.padding);
     expect(dirty.terminal.scrollback).toBe(DEFAULT_SETTINGS.terminal.scrollback);
     expect(dirty.terminal.reconnect.maxAttempts).toBe(
       DEFAULT_SETTINGS.terminal.reconnect.maxAttempts,
@@ -86,10 +87,11 @@ describe("sanitizeSettings", () => {
 
   it("passes in-range numeric fields through untouched", () => {
     const result = mergeSettings({
-      terminal: { fontSize: 18 },
+      terminal: { fontSize: 18, padding: 8 },
       sessions: { reconcileIntervalSeconds: 120 },
     });
     expect(result.terminal.fontSize).toBe(18);
+    expect(result.terminal.padding).toBe(8);
     expect(result.sessions.reconcileIntervalSeconds).toBe(120);
   });
 
