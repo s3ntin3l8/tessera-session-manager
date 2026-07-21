@@ -27,7 +27,12 @@ import { Settings } from "./Settings.js";
 import type { SettingsSection } from "./Settings.js";
 import { Dock } from "./Dock.js";
 import { GridIcon, RefreshIcon, ServerRackIcon } from "./icons.js";
-import { useDashboardStore, LIVE_REFRESH_INTERVAL_MS } from "./store.js";
+import {
+  useDashboardStore,
+  LIVE_REFRESH_INTERVAL_MS,
+  SIDEBAR_MIN_WIDTH,
+  SIDEBAR_MAX_WIDTH,
+} from "./store.js";
 import type { Session } from "./api.js";
 import { getSchemeBackground } from "./terminalTheme.js";
 import { playNotificationSound } from "./notifySound.js";
@@ -142,6 +147,9 @@ export function App() {
   // the mobile switcher's tab list re-render off dockviewApi.panels, which
   // dockview itself doesn't expose as reactive state.
   const [panelsVersion, setPanelsVersion] = useState(0);
+  const [sidebarWidth, setSidebarWidthLocal] = useState(
+    () => useDashboardStore.getState().sidebarWidth,
+  );
 
   const {
     workspaces,
@@ -160,7 +168,6 @@ export function App() {
     startThemeWatch,
     sidebarCollapsed,
     setSidebarCollapsed,
-    sidebarWidth,
     setSidebarWidth,
     splitRequest,
     clearSplitRequest,
@@ -831,11 +838,9 @@ export function App() {
   }, [isMobile, sidebarCollapsed, setSidebarCollapsed]);
 
   // ---- Sidebar width drag (same pattern as Dock's height drag) ----
-  const sidebarWidthRef = useRef(288);
+  const sidebarWidthRef = useRef(sidebarWidth);
   const sidebarDragRef = useRef<{ startX: number; startW: number } | null>(null);
   const [sidebarResizing, setSidebarResizing] = useState(false);
-  const SIDEBAR_MIN_WIDTH = 288;
-  const SIDEBAR_MAX_WIDTH = 500;
 
   const onSidebarResizeMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -853,9 +858,11 @@ export function App() {
         Math.min(SIDEBAR_MAX_WIDTH, d.startW + (e.clientX - d.startX)),
       );
       sidebarWidthRef.current = w;
-      setSidebarWidth(w);
+      setSidebarWidthLocal(w);
     };
     const onUp = () => {
+      const w = sidebarWidthRef.current;
+      setSidebarWidth(w);
       setSidebarResizing(false);
       sidebarDragRef.current = null;
     };
@@ -869,9 +876,9 @@ export function App() {
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
     };
-  }, [sidebarResizing, setSidebarWidth]);
+  }, [sidebarResizing, setSidebarWidth, setSidebarWidthLocal]);
 
-  // Keep the ref in sync with the store value (initial load, reload, etc.)
+  // Keep the ref in sync with the local state (initial load, reload, etc.)
   useEffect(() => {
     sidebarWidthRef.current = sidebarWidth;
   }, [sidebarWidth]);

@@ -43,11 +43,13 @@ let consecutiveSessionFetchFailures = 0;
 const SIDEBAR_COLLAPSED_KEY = "crs.sidebarCollapsed";
 // Persisted sidebar width (drag-to-resize, same pattern as dock height).
 const SIDEBAR_WIDTH_KEY = "crs.sidebarWidth";
-const SIDEBAR_WIDTH_DEFAULT = 288;
+export const SIDEBAR_MIN_WIDTH = 288;
+export const SIDEBAR_MAX_WIDTH = 500;
 function readStoredSidebarWidth(): number {
   const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY);
   const parsed = raw ? Number(raw) : NaN;
-  return !isNaN(parsed) && parsed >= SIDEBAR_WIDTH_DEFAULT ? parsed : SIDEBAR_WIDTH_DEFAULT;
+  if (isNaN(parsed)) return SIDEBAR_MIN_WIDTH;
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, parsed));
 }
 // Per-browser "read" state for the notification bell (NotificationBell.tsx) —
 // there is no backend acknowledge/mark-read concept (attention is sticky
