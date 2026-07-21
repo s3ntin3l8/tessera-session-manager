@@ -222,17 +222,28 @@ describe("checkForUpdate", () => {
     expect(result.latestVersion).toBe("0.2.0");
   });
 
-  it("falls back to the first parseable, non-draft, non-prerelease entry when tags don't compare", async () => {
+  it("prefers a later parseable release over an earlier unparseable one (Hermes review, PR #130)", async () => {
     fetchMock.mockResolvedValueOnce(
-      releasesResponse(200, [{ tag_name: "not-a-version" }, { tag_name: "v0.1.5" }]),
+      releasesResponse(200, [{ tag_name: "nightly" }, { tag_name: "v0.1.5" }]),
     );
 
     const result = await checkForUpdate("owner/repo", "0.1.4", true);
 
-    // The first entry (unparseable) is still the array's "best" by position
-    // since it's non-draft/non-prerelease and never loses a comparison to
-    // the parseable one that follows it.
-    expect(result.latestVersion).toBe("not-a-version");
+    // "nightly" is newest-created (array order) but unparseable — it must
+    // not permanently shadow the properly-tagged release that follows it.
+    expect(result.latestVersion).toBe("0.1.5");
+  });
+
+  it("keeps the first unparseable entry when no later entry is parseable either", async () => {
+    fetchMock.mockResolvedValueOnce(
+      releasesResponse(200, [{ tag_name: "nightly-2" }, { tag_name: "nightly-1" }]),
+    );
+
+    const result = await checkForUpdate("owner/repo", "0.1.4", true);
+
+    // Among unparseable-only candidates, array order (GitHub's
+    // newest-created-first) still decides.
+    expect(result.latestVersion).toBe("nightly-2");
   });
 
   it("passes applyAvailable through as given, independent of GitHub state", async () => {

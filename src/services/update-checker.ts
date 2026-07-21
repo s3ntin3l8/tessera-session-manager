@@ -96,26 +96,25 @@ function parseVersion(raw: string): [number, number, number] | null {
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
-/** True only when `latest` parses and is strictly greater than `current`
- * component-wise (major, then minor, then patch). Any parse failure on
- * either side is treated as "not newer" — a conservative default, since a
- * false "update available" nags the user into applying a broken/unparseable
- * release. */
-function isNewer(latestRaw: string, currentRaw: string): boolean {
-  const latest = parseVersion(latestRaw);
-  const current = parseVersion(currentRaw);
-  if (!latest || !current) return false;
-  for (let i = 0; i < 3; i++) {
-    if (latest[i] !== current[i]) return latest[i] > current[i];
-  }
-  return false;
-}
-
+/** True only when `a` is strictly greater than `b`, component-wise (major,
+ * then minor, then patch). Shared by isNewer (raw-string tags) and
+ * selectLatestRelease (already-parsed tags) — Hermes review, PR #130. */
 function isHigherVersion(a: [number, number, number], b: [number, number, number]): boolean {
   for (let i = 0; i < 3; i++) {
     if (a[i] !== b[i]) return a[i] > b[i];
   }
   return false;
+}
+
+/** True only when `latest` parses and is strictly greater than `current`.
+ * Any parse failure on either side is treated as "not newer" — a
+ * conservative default, since a false "update available" nags the user into
+ * applying a broken/unparseable release. */
+function isNewer(latestRaw: string, currentRaw: string): boolean {
+  const latest = parseVersion(latestRaw);
+  const current = parseVersion(currentRaw);
+  if (!latest || !current) return false;
+  return isHigherVersion(latest, current);
 }
 
 /**
@@ -125,14 +124,16 @@ function isHigherVersion(a: [number, number, number], b: [number, number, number
  * endpoint — which GitHub's CDN caches far less aggressively than
  * `/releases/latest`, the root cause of issue #123's stale-result bug.
  * Drafts and prereleases are excluded, matching `/releases/latest`'s own
- * semantics. Among the rest, the highest semver (via parseVersion) wins;
- * entries with an unparseable tag never win a comparison, so the first
- * parseable, non-draft, non-prerelease entry survives by array order
- * (GitHub returns the list newest-created-first) — the same conservative
- * "can't compare, don't crash" stance as isNewer. Returns null when nothing
- * qualifies (e.g. a repo with only draft/prerelease releases, or none at
- * all), which callers treat as a successful check with no comparable
- * release rather than an error.
+ * semantics. Among the rest, the highest semver (via parseVersion) wins; a
+ * parseable tag always beats an unparseable one regardless of array
+ * position (Hermes review, PR #130: an earlier release with e.g. a
+ * "nightly" tag must not permanently shadow a later, properly-tagged
+ * release). Among unparseable candidates only, the first survives by array
+ * order (GitHub returns the list newest-created-first) — the same
+ * conservative "can't compare, don't crash" stance as isNewer. Returns null
+ * when nothing qualifies (e.g. a repo with only draft/prerelease releases,
+ * or none at all), which callers treat as a successful check with no
+ * comparable release rather than an error.
  */
 function selectLatestRelease(
   releases: GitHubReleaseApiResponse[],
@@ -147,7 +148,9 @@ function selectLatestRelease(
       bestVersion = version;
       continue;
     }
-    if (version && bestVersion && isHigherVersion(version, bestVersion)) {
+    // A parseable candidate always beats an unparseable current best, even
+    // if it can't (yet) be compared by isHigherVersion against it.
+    if (version && (!bestVersion || isHigherVersion(version, bestVersion))) {
       best = release;
       bestVersion = version;
     }
