@@ -27,6 +27,10 @@ export interface AppSettings {
   terminal: {
     fontFamily: string;
     fontSize: number;
+    // Inner inset (px) between the dockview panel edge and the rendered
+    // terminal content, applied on all four sides — see frontend/src/api.ts's
+    // matching field for the full rationale (issue #91).
+    padding: number;
     colorScheme: string;
     cursorStyle: CursorStyle;
     cursorBlink: boolean;
@@ -78,6 +82,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminal: {
     fontFamily: "Geist Mono",
     fontSize: 14,
+    padding: 4,
     colorScheme: "default",
     cursorStyle: "block",
     cursorBlink: true,
@@ -199,6 +204,11 @@ export function sanitizeSettings(settings: AppSettings): AppSettings {
         min: 10,
         max: 20,
         fallback: DEFAULT_SETTINGS.terminal.fontSize,
+      }),
+      padding: safeNumber(settings.terminal.padding, {
+        min: 0,
+        max: 16,
+        fallback: DEFAULT_SETTINGS.terminal.padding,
       }),
       scrollback: safeNumber(settings.terminal.scrollback, {
         min: 100,

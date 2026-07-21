@@ -9,6 +9,7 @@ import { ImageIcon, RefreshIcon, SpinnerIcon, WifiOffIcon } from "./icons.js";
 import { useDashboardStore } from "./store.js";
 import { buildXtermTheme } from "./terminalTheme.js";
 import { api, type AppSettings } from "./api.js";
+import { registerTerminalRepaint, unregisterTerminalRepaint } from "./terminalRepaintRegistry.js";
 
 export interface TerminalPaneParams {
   sessionId: number;
@@ -157,6 +158,11 @@ export function TerminalPane(props: {
   // the backend PTY about any resulting grid-size change instead of silently
   // resizing xterm without it — see that effect's own comment.
   const refitRef = useRef<() => void>(() => {});
+  // Exposes the mount effect's `repaint` (full every-row re-raster, see the
+  // registry comment above) to the settings-sync effect's font-load path
+  // below, for the same reason refitRef exists — closed over the real
+  // term/webglAddon instances rather than captured once.
+  const repaintRef = useRef<() => void>(() => {});
   // Reactive: drives the settings-sync effect below whenever ANY terminal
   // pref changes — including the *first* change, which is the async
   // GET /api/settings hydration resolving after this pane has already
@@ -284,6 +290,43 @@ export function TerminalPane(props: {
     // that lastTitle rides on.
     const titleSub = term.onTitleChange((title) => onTitleChangeRef.current?.(title));
 
+    // Answers OSC 10/11/12 *query* requests ("ESC ] 10|11|12 ; ? BEL") the way
+    // a real terminal emulator does (issue #91). Terminal-aware CLIs send this
+    // at their own startup to detect whether they're on a light or dark
+    // background before choosing colors — confirmed Claude Code does this by
+    // capturing its raw PTY output. xterm.js parses the query internally but
+    // doesn't expose a way to answer it (no `onColor`/report event on the
+    // public Terminal API), so left unanswered the CLI falls back to colors
+    // tuned for a dark terminal — which is exactly why a "selected" menu row
+    // can end up invisible against one of Tessera's light color schemes: the
+    // highlight color is fine on a dark background and washes out on a light
+    // one. `parser.registerOscHandler` is public API (not gated behind
+    // allowProposedApi) and, per xterm.js's own dispatch order, runs *before*
+    // its built-in OSC 10/11/12 handling (handlers are walked last-registered-
+    // first) — so this only adds the missing "report" half. Anything other
+    // than the query form ("?") is left unhandled (`return false`) and falls
+    // through to xterm's own existing SET handling.
+    const OSC_COLOR_IDENTS: ReadonlyArray<[number, "foreground" | "background" | "cursor"]> = [
+      [10, "foreground"],
+      [11, "background"],
+      [12, "cursor"],
+    ];
+    const oscColorSubs = OSC_COLOR_IDENTS.map(([ident, key]) =>
+      term.parser.registerOscHandler(ident, (data) => {
+        if (data !== "?") return false;
+        if (ws?.readyState !== WebSocket.OPEN) return true;
+        const hex = term.options.theme?.[key];
+        if (typeof hex !== "string") return true;
+        const clean = hex.replace("#", "");
+        // OSC report replies use 16-bit-per-channel `rgb:` form (each 8-bit
+        // hex byte doubled), the convention real terminal emulators use —
+        // distinct from the plain `#rrggbb` form used for the SET push below.
+        const [r, g, b] = [clean.slice(0, 2), clean.slice(2, 4), clean.slice(4, 6)];
+        ws.send(new TextEncoder().encode(`\x1b]${ident};rgb:${r}${r}/${g}${g}/${b}${b}\x07`));
+        return true;
+      }),
+    );
+
     let lastCols = term.cols;
     let lastRows = term.rows;
     const sendResizeIfOpen = () => {
@@ -300,6 +343,21 @@ export function TerminalPane(props: {
       sendResizeIfOpen();
     };
     refitRef.current = refit;
+
+    // Full every-row re-raster (issue #107) — unlike `refit`/`fit()`, this
+    // isn't gated on a cols/rows delta, so it also heals a terminal whose grid
+    // size never changed (the common case: another panel opening doesn't
+    // resize *this* one). `clearTextureAtlas()` forces the WebGL renderer to
+    // rebuild its glyph texture atlas; `term.refresh()` then repaints every
+    // row from it, including the static input/status band that a mere scroll
+    // can never reach (scrolling only repaints the rows that scroll).
+    const repaint = () => {
+      webglAddonRef.current?.clearTextureAtlas();
+      term.refresh(0, term.rows - 1);
+    };
+    repaintRef.current = repaint;
+    registerTerminalRepaint(props.params.sessionId, repaint);
+
     const resizeObserver = new ResizeObserver(refit);
     resizeObserver.observe(container);
     // Redundant on top of the ResizeObserver above — Chromium doesn't
@@ -534,6 +592,7 @@ export function TerminalPane(props: {
       selectionSub.dispose();
       dataSub.dispose();
       titleSub.dispose();
+      oscColorSubs.forEach((sub) => sub.dispose());
       ws?.close();
       term.dispose();
       termRef.current = null;
@@ -542,6 +601,8 @@ export function TerminalPane(props: {
       wsRef.current = null;
       pendingOscRef.current = null;
       refitRef.current = () => {};
+      repaintRef.current = () => {};
+      unregisterTerminalRepaint(props.params.sessionId);
       uploadImageRef.current = () => {};
     };
     // theme intentionally excluded — mount effect must not recreate the
@@ -571,22 +632,26 @@ export function TerminalPane(props: {
     term.options.fontFamily = `'${terminalSettings.fontFamily}', 'Geist Mono', monospace`;
     const xtermTheme = buildXtermTheme(terminalSettings.colorScheme, theme);
     term.options.theme = xtermTheme;
-    // Notify the running program of a theme change by pushing OSC color SET
-    // sequences through the PTY (arrives on the program's STDIN). Modern CLI
-    // tools that implement terminal-aware theming (opencode) read these from
-    // stdin and update their internal color scheme. Both #rrggbb and
-    // rgb:rr/gg/bb are valid colour-spec formats per OSC 10/11; we send hex
-    // (matching xterm's own colour storage) as the more commonly documented
-    // form. Harmless for tools that don't handle them — the bytes are
-    // consumed silently in raw mode. Gated behind a theme comparison to avoid
-    // re-sending identical bytes on unrelated pref changes (font size, cursor
-    // blink, etc.). When the socket isn't OPEN (connecting/reconnecting/
-    // failed), the bytes are queued in pendingOscRef so the socket open
-    // handler above drains them when the connection is restored — otherwise a
-    // theme toggle during a reconnect would be silently lost.
+    // Notify the running program of a theme change by pushing color
+    // sequences through the PTY (arrives on the program's STDIN): OSC 10/11
+    // SET (foreground/background) for tools that read it directly from
+    // stdin, plus a DEC `\x1b[?997;1n`/`;2n` "color scheme update"
+    // notification carrying the resolved dark/light mode for tools that
+    // instead react to that and re-query (e.g. opencode — see issue #99 and
+    // the PR description for the full mechanism). Both are harmless for
+    // tools that don't handle them — unknown OSC/CSI is consumed silently in
+    // raw mode. Gated behind a theme comparison to avoid re-sending
+    // identical bytes on unrelated pref changes (font size, cursor blink,
+    // etc.). When the socket isn't OPEN (connecting/reconnecting/failed),
+    // the bytes are queued in pendingOscRef so the socket open handler above
+    // drains them when the connection is restored — otherwise a theme
+    // toggle during a reconnect would be silently lost.
     if (theme !== prevThemeRef.current) {
+      const dec997Notification = theme === "light" ? "\x1b[?997;2n" : "\x1b[?997;1n";
       const oscPush =
-        `\x1b]10;${xtermTheme.foreground}\x07` + `\x1b]11;${xtermTheme.background}\x07`;
+        `\x1b]10;${xtermTheme.foreground}\x07` +
+        `\x1b]11;${xtermTheme.background}\x07` +
+        dec997Notification;
       const ws = wsRef.current;
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(new TextEncoder().encode(oscPush));
@@ -604,7 +669,11 @@ export function TerminalPane(props: {
 
     // The WebGL renderer caches glyphs (size and color both) in a texture
     // atlas; reassigning these options alone leaves already-rendered glyphs
-    // showing their old font/size/color until the atlas is rebuilt.
+    // showing their old font/size/color until the atlas is rebuilt. Cleared
+    // immediately (not deferred to `repaintRef.current()` below) so a
+    // color-only change (theme toggle, no font-load wait involved) doesn't
+    // sit stale until that later call fires — `repaint()` clearing it again
+    // afterward is a harmless no-op double-clear, not a correctness issue.
     webglAddonRef.current?.clearTextureAtlas();
 
     // fontSize/fontFamily changes affect cell measurement, so the terminal
@@ -616,13 +685,24 @@ export function TerminalPane(props: {
     // grid size, the backend PTY is told about it the same way any other
     // resize is — otherwise this could silently desync xterm's grid from the
     // PTY's size with no resize message ever sent to reconcile them.
+    //
+    // `repaintRef.current()` runs alongside it, unconditionally (issue #107):
+    // `refit`'s `fit()` early-returns without repainting when the grid size
+    // doesn't change, which is the common case for a same-size mount/font
+    // finishing its fetch — so without this, a terminal whose WebGL glyph
+    // atlas got corrupted at construction time (see the registry comment
+    // near the top of this file) would never get a first real repaint.
     if (typeof document !== "undefined" && document.fonts) {
       document.fonts
         .load(`${terminalSettings.fontSize}px "${terminalSettings.fontFamily}"`)
-        .then(() => refitRef.current())
+        .then(() => {
+          refitRef.current();
+          repaintRef.current();
+        })
         .catch(() => {});
     } else {
       refitRef.current();
+      repaintRef.current();
     }
   }, [terminalSettings, theme]);
 
@@ -637,7 +717,28 @@ export function TerminalPane(props: {
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      {
+        // Padding + border-box (not the outer wrapper) is deliberate — see
+        // issue #91: `.xterm` is a normal-flow child of whatever element
+        // `term.open()` is called on, so padding here visually insets the
+        // rendered terminal on all sides, and FitAddon.fit() reads this same
+        // element's content-box width/height, so the computed cols/rows
+        // already account for it (no clipping/overflow). border-box keeps
+        // this div's own occupied size at exactly 100% of its parent —
+        // without it, width:100% + padding would add the padding on top and
+        // overflow the pane. The four absolutely-positioned overlay siblings
+        // below resolve their offsets against the *outer* `position:
+        // relative` wrapper, not this div, so they're unaffected either way.
+      }
+      <div
+        ref={containerRef}
+        style={{
+          width: "100%",
+          height: "100%",
+          padding: `${terminalSettings.padding}px`,
+          boxSizing: "border-box",
+        }}
+      />
       <input
         ref={fileInputRef}
         type="file"

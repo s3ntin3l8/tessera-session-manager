@@ -3,16 +3,33 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, waitFor, fireEvent } from "@testing-library/react";
 import { act } from "react";
 import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import type { Theme } from "./store.js";
 import { useDashboardStore } from "./store.js";
 import { TerminalPane } from "./TerminalPane.js";
 import { api } from "./api.js";
 import type * as ApiModule from "./api.js";
+import { registerTerminalRepaint, unregisterTerminalRepaint } from "./terminalRepaintRegistry.js";
 
 vi.mock("./api.js", async (importOriginal) => {
   const actual = await importOriginal<typeof ApiModule>();
   return { ...actual, api: { ...actual.api, uploadSessionImage: vi.fn() } };
 });
+
+vi.mock("./terminalRepaintRegistry.js", () => ({
+  registerTerminalRepaint: vi.fn(),
+  unregisterTerminalRepaint: vi.fn(),
+  repaintAllTerminals: vi.fn(),
+}));
+
+// Keyed by OSC ident (10/11/12) — populated by the mocked Terminal's
+// `parser.registerOscHandler` below so tests can simulate the running
+// program sending an OSC query/set payload without a real xterm.js parser.
+// Declared via vi.hoisted so the vi.mock("@xterm/xterm", ...) factory below
+// (itself hoisted above this file's imports) can close over it safely.
+const { oscHandlers } = vi.hoisted(() => ({
+  oscHandlers: new Map<number, (data: string) => boolean>(),
+}));
 
 interface FakeSocket {
   readyState: number;
@@ -29,7 +46,13 @@ let fakeWsSend: ReturnType<typeof vi.fn>;
 function oscRegex() {
   const ESC = String.fromCharCode(27);
   const BEL = String.fromCharCode(7);
-  return new RegExp(`^${ESC}\\]10;#[\\da-f]{6}${BEL}${ESC}\\]11;#[\\da-f]{6}${BEL}$`, "i");
+  // OSC 10/11 SET followed by the DEC `\x1b[?997;1n`/`;2n` "color scheme
+  // update" notification opencode listens for (issue #99) — always appended
+  // together as one push.
+  return new RegExp(
+    `^${ESC}\\]10;#[\\da-f]{6}${BEL}${ESC}\\]11;#[\\da-f]{6}${BEL}${ESC}\\[\\?997;[12]n$`,
+    "i",
+  );
 }
 
 // Once the fake socket reports OPEN, the component's own "open" handler also
@@ -74,6 +97,11 @@ vi.mock("@xterm/xterm", () => {
       loadAddon: vi.fn(),
       dispose: vi.fn(),
       write: vi.fn(),
+      // jsdom has no `document.fonts`, so the settings-sync effect's
+      // font-load path (TerminalPane.tsx) takes its synchronous fallback
+      // branch on every render, which calls `repaint()` -> `term.refresh()`
+      // (issue #107) unconditionally — needed or every existing test throws.
+      refresh: vi.fn(),
       hasSelection: vi.fn(() => false),
       getSelection: vi.fn(() => ""),
       paste: vi.fn(),
@@ -81,6 +109,12 @@ vi.mock("@xterm/xterm", () => {
       onTitleChange: vi.fn(() => createDisposable()),
       onSelectionChange: vi.fn(() => createDisposable()),
       attachCustomKeyEventHandler: vi.fn(),
+      parser: {
+        registerOscHandler: vi.fn((ident: number, cb: (data: string) => boolean) => {
+          oscHandlers.set(ident, cb);
+          return createDisposable();
+        }),
+      },
     };
   });
   return { Terminal };
@@ -148,7 +182,17 @@ function getLatestTermInstance() {
   };
 }
 
+// Same pattern as getLatestTermInstance above, for the mocked FitAddon
+// (see the @xterm/addon-fit mock) — used to assert a settings change
+// re-triggers fit() without caring about call order relative to other
+// effects.
+function getLatestFitAddonInstance() {
+  const results = (FitAddon as unknown as ReturnType<typeof vi.fn>).mock.results;
+  return results[results.length - 1]!.value as { fit: ReturnType<typeof vi.fn> };
+}
+
 beforeEach(() => {
+  oscHandlers.clear();
   localStorage.clear();
   vi.stubGlobal(
     "ResizeObserver",
@@ -157,6 +201,8 @@ beforeEach(() => {
     }),
   );
   vi.mocked(api.uploadSessionImage).mockReset();
+  vi.mocked(registerTerminalRepaint).mockClear();
+  vi.mocked(unregisterTerminalRepaint).mockClear();
 });
 
 afterEach(() => {
@@ -172,6 +218,7 @@ function renderPane() {
       terminal: {
         fontFamily: "Geist Mono",
         fontSize: 14,
+        padding: 4,
         colorScheme: "default",
         cursorStyle: "block",
         cursorBlink: true,
@@ -208,6 +255,69 @@ function renderPane() {
   });
   return render(<TerminalPane params={{ sessionId: 1 }} />);
 }
+
+describe("TerminalPane repaint registry (issue #107)", () => {
+  it("registers this session's repaint on mount and unregisters it on unmount", () => {
+    stubFakeWebSocket(true);
+    const { unmount } = renderPane();
+
+    expect(registerTerminalRepaint).toHaveBeenCalledTimes(1);
+    const [sessionId, repaint] = vi.mocked(registerTerminalRepaint).mock.calls[0]!;
+    expect(sessionId).toBe(1);
+    expect(repaint).toBeInstanceOf(Function);
+    expect(unregisterTerminalRepaint).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(unregisterTerminalRepaint).toHaveBeenCalledExactlyOnceWith(1);
+  });
+});
+
+describe("TerminalPane pane padding (issue #91)", () => {
+  it("applies the configured padding and border-box sizing to the terminal container", () => {
+    stubFakeWebSocket(true);
+    const { container } = renderPane();
+
+    // The containerRef div is the one xterm opens into — distinguish it
+    // from the outer position:relative wrapper by its inline padding, which
+    // only this div ever sets.
+    const containerDiv = container.querySelector("div[style*='padding']") as HTMLDivElement;
+    expect(containerDiv).toBeTruthy();
+    expect(containerDiv.style.padding).toBe("4px");
+    expect(containerDiv.style.boxSizing).toBe("border-box");
+  });
+
+  it("re-fits the terminal when the padding setting changes", async () => {
+    stubFakeWebSocket(true);
+    renderPane();
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+
+    const fitAddon = getLatestFitAddonInstance();
+    fitAddon.fit.mockClear();
+
+    act(() => {
+      useDashboardStore.setState((s) => ({
+        settings: { ...s.settings, terminal: { ...s.settings.terminal, padding: 10 } },
+      }));
+    });
+
+    await waitFor(() => expect(fitAddon.fit).toHaveBeenCalled());
+  });
+
+  it("reflects a padding change in the rendered container's inline style", () => {
+    stubFakeWebSocket(true);
+    const { container } = renderPane();
+
+    act(() => {
+      useDashboardStore.setState((s) => ({
+        settings: { ...s.settings, terminal: { ...s.settings.terminal, padding: 0 } },
+      }));
+    });
+
+    const containerDiv = container.querySelector("div[style*='box-sizing']") as HTMLDivElement;
+    expect(containerDiv.style.padding).toBe("0px");
+  });
+});
 
 describe("TerminalPane OSC push", () => {
   it("sends OSC 10/11 bytes on theme toggle when socket is OPEN", async () => {
@@ -275,6 +385,84 @@ describe("TerminalPane OSC push", () => {
     await vi.waitFor(() => {
       expect(fakeWsSend).not.toHaveBeenCalled();
     });
+  });
+
+  it("appends the DEC 997 notification matching the resolved mode (issue #99)", async () => {
+    stubFakeWebSocket(true);
+    renderPane();
+
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+
+    useDashboardStore.setState({ theme: "light" as Theme });
+    await waitFor(() => {
+      expect(decodedOscSends().some((s) => s.endsWith("\x1b[?997;2n"))).toBe(true);
+    });
+
+    fakeWsSend.mockClear();
+    useDashboardStore.setState({ theme: "dark" as Theme });
+    await waitFor(() => {
+      expect(decodedOscSends().some((s) => s.endsWith("\x1b[?997;1n"))).toBe(true);
+    });
+  });
+});
+
+describe("TerminalPane OSC 10/11/12 query responder (issue #91)", () => {
+  // Every send is a raw byte payload here (unlike decodedOscSends() above,
+  // which filters for the `#rrggbb` SET-push format) — decode all of them.
+  function decodedSends(): string[] {
+    return fakeWsSend.mock.calls
+      .map((call) => call[0] as unknown)
+      .filter((arg): arg is ArrayBufferView => ArrayBuffer.isView(arg))
+      .map((bytes) => new TextDecoder().decode(bytes));
+  }
+
+  it("answers an OSC 11 background query with the live scheme's background, rgb: doubled-hex form", async () => {
+    stubFakeWebSocket(true);
+    renderPane();
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+    fakeWsSend.mockClear();
+
+    const handled = oscHandlers.get(11)!("?");
+
+    expect(handled).toBe(true);
+    // Tessera Dark's dark background is #0d0d0d (terminalSchemes.ts).
+    expect(decodedSends()).toContain("\x1b]11;rgb:0d0d/0d0d/0d0d\x07");
+  });
+
+  it("answers OSC 10 (foreground) and OSC 12 (cursor) queries too", async () => {
+    stubFakeWebSocket(true);
+    renderPane();
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+    fakeWsSend.mockClear();
+
+    oscHandlers.get(10)!("?");
+    oscHandlers.get(12)!("?");
+
+    // Tessera Dark's dark foreground/cursor is #ededed.
+    expect(decodedSends()).toContain("\x1b]10;rgb:eded/eded/eded\x07");
+    expect(decodedSends()).toContain("\x1b]12;rgb:eded/eded/eded\x07");
+  });
+
+  it("does not answer (and reports unhandled) a non-query OSC 11 payload, leaving it for xterm's own SET handling", async () => {
+    stubFakeWebSocket(true);
+    renderPane();
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+    fakeWsSend.mockClear();
+
+    const handled = oscHandlers.get(11)!("#112233");
+
+    expect(handled).toBe(false);
+    expect(fakeWsSend).not.toHaveBeenCalled();
+  });
+
+  it("swallows the query without sending when the socket isn't open", async () => {
+    stubFakeWebSocket(false);
+    renderPane();
+
+    const handled = oscHandlers.get(11)!("?");
+
+    expect(handled).toBe(true);
+    expect(fakeWsSend).not.toHaveBeenCalled();
   });
 });
 
