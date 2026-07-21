@@ -160,6 +160,8 @@ export function App() {
     startThemeWatch,
     sidebarCollapsed,
     setSidebarCollapsed,
+    sidebarWidth,
+    setSidebarWidth,
     splitRequest,
     clearSplitRequest,
     backendReachable,
@@ -828,6 +830,52 @@ export function App() {
     else setSidebarCollapsed(!sidebarCollapsed);
   }, [isMobile, sidebarCollapsed, setSidebarCollapsed]);
 
+  // ---- Sidebar width drag (same pattern as Dock's height drag) ----
+  const sidebarWidthRef = useRef(288);
+  const sidebarDragRef = useRef<{ startX: number; startW: number } | null>(null);
+  const [sidebarResizing, setSidebarResizing] = useState(false);
+  const SIDEBAR_MIN_WIDTH = 288;
+  const SIDEBAR_MAX_WIDTH = 500;
+
+  const onSidebarResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    sidebarDragRef.current = { startX: e.clientX, startW: sidebarWidthRef.current };
+    setSidebarResizing(true);
+  }, []);
+
+  useEffect(() => {
+    if (!sidebarResizing) return;
+    const onMove = (e: MouseEvent) => {
+      const d = sidebarDragRef.current;
+      if (!d) return;
+      const w = Math.max(
+        SIDEBAR_MIN_WIDTH,
+        Math.min(SIDEBAR_MAX_WIDTH, d.startW + (e.clientX - d.startX)),
+      );
+      sidebarWidthRef.current = w;
+      setSidebarWidth(w);
+    };
+    const onUp = () => {
+      setSidebarResizing(false);
+      sidebarDragRef.current = null;
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+  }, [sidebarResizing, setSidebarWidth]);
+
+  // Keep the ref in sync with the store value (initial load, reload, etc.)
+  useEffect(() => {
+    sidebarWidthRef.current = sidebarWidth;
+  }, [sidebarWidth]);
+
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
   // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally re-derives off panelsVersion, not a real dependency
   const paneCount = useMemo(() => dockviewApi?.panels.length ?? 0, [dockviewApi, panelsVersion]);
@@ -875,7 +923,8 @@ export function App() {
 
   return (
     <div
-      className={`app cmux-root${theme === "light" ? " light" : ""}${sidebarOpen ? " sb-open" : ""}${sidebarCollapsed ? " sidebar-collapsed" : ""}${settings.sidebarDensity === "compact" ? " density-compact" : ""}`}
+      className={`app cmux-root${theme === "light" ? " light" : ""}${sidebarOpen ? " sb-open" : ""}${sidebarCollapsed ? " sidebar-collapsed" : ""}${sidebarResizing ? " sidebar-resizing" : ""}${settings.sidebarDensity === "compact" ? " density-compact" : ""}`}
+      style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
     >
       <Toolbar
         onToggleSidebar={toggleSidebar}
@@ -889,6 +938,9 @@ export function App() {
       <div className="app-body">
         <div className="cmux-scrim" onClick={() => setSidebarOpen(false)} />
         <div className="sidebar-wrapper cmux-scroll">
+          {!sidebarCollapsed && (
+            <div className="sidebar-resize-handle" onMouseDown={onSidebarResizeMouseDown} />
+          )}
           <WorkspaceSwitcher />
           <Sidebar
             onOpenSession={onOpenSession}
