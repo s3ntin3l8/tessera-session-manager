@@ -298,6 +298,9 @@ export function SessionRow({
         : session.command;
 
   const showCommand = title === session.command;
+  // Suppress the agent binary label when the title already starts with it
+  // (e.g. command fallback "npm run build" already includes "npm") to avoid
+  // redundant "npm npm run build" rendering.
   const showAgentFallback =
     !agentLogo && !(title === agentBinary || title.startsWith(agentBinary + " "));
 
