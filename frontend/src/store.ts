@@ -41,6 +41,16 @@ let consecutiveSessionFetchFailures = 0;
 // breakpoint: mobile is a closed-by-default overlay, desktop is an
 // open-by-default panel the user can choose to hide).
 const SIDEBAR_COLLAPSED_KEY = "crs.sidebarCollapsed";
+// Persisted sidebar width (drag-to-resize, same pattern as dock height).
+const SIDEBAR_WIDTH_KEY = "crs.sidebarWidth";
+export const SIDEBAR_MIN_WIDTH = 288;
+export const SIDEBAR_MAX_WIDTH = 500;
+function readStoredSidebarWidth(): number {
+  const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+  const parsed = raw ? Number(raw) : NaN;
+  if (isNaN(parsed)) return SIDEBAR_MIN_WIDTH;
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, parsed));
+}
 // Per-browser "read" state for the notification bell (NotificationBell.tsx) —
 // there is no backend acknowledge/mark-read concept (attention is sticky
 // in-memory PtyManager state, see src/services/pty-manager.ts), so this is
@@ -166,6 +176,7 @@ interface DashboardState {
   hideEndedSessions: boolean;
   notificationsEnabled: boolean;
   sidebarCollapsed: boolean;
+  sidebarWidth: number;
   // Per-browser notification-bell read state — see ACKED_ATTENTION_KEY above.
   acknowledgedAttention: Record<number, number>;
   // Design's "whole backend down" state (States doc section 04) — flips
@@ -257,6 +268,7 @@ interface DashboardState {
   setHideEndedSessions: (value: boolean) => void;
   setNotificationsEnabled: (value: boolean) => void;
   setSidebarCollapsed: (value: boolean) => void;
+  setSidebarWidth: (value: number) => void;
   // NotificationBell.tsx's row click / "Mark all as read" — see
   // isUnreadAttention above for the read/unread rule these maintain.
   acknowledgeAttention: (sessionId: number) => void;
@@ -326,6 +338,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
     hideEndedSessions: DEFAULT_SETTINGS.sessions.hideEndedSessions,
     notificationsEnabled: DEFAULT_SETTINGS.notifications.attentionAlerts,
     sidebarCollapsed: localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1",
+    sidebarWidth: readStoredSidebarWidth(),
     acknowledgedAttention: readStoredAckedAttention(),
     splitRequest: null,
     backendReachable: true,
@@ -538,6 +551,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
     setSidebarCollapsed: (value) => {
       localStorage.setItem(SIDEBAR_COLLAPSED_KEY, value ? "1" : "0");
       set({ sidebarCollapsed: value });
+    },
+
+    setSidebarWidth: (value) => {
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(value));
+      set({ sidebarWidth: value });
     },
 
     acknowledgeAttention: (sessionId) => {
