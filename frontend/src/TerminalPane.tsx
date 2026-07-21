@@ -735,6 +735,12 @@ export function TerminalPane(props: {
         style={{
           width: "100%",
           height: "100%",
+          // xterm's own canvas covers the terminal area itself, but not the
+          // padding ring around it — without an explicit background here,
+          // that ring (and the dockview chrome peeking through it) shows
+          // through as an unrelated color when it doesn't match the active
+          // scheme (issue #132).
+          background: buildXtermTheme(terminalSettings.colorScheme, theme).background,
           padding: `${terminalSettings.padding}px`,
           boxSizing: "border-box",
         }}
