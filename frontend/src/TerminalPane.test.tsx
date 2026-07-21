@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, waitFor, fireEvent } from "@testing-library/react";
 import { act } from "react";
 import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import type { Theme } from "./store.js";
 import { useDashboardStore } from "./store.js";
 import { TerminalPane } from "./TerminalPane.js";
@@ -175,6 +176,15 @@ function getLatestTermInstance() {
   };
 }
 
+// Same pattern as getLatestTermInstance above, for the mocked FitAddon
+// (see the @xterm/addon-fit mock) — used to assert a settings change
+// re-triggers fit() without caring about call order relative to other
+// effects.
+function getLatestFitAddonInstance() {
+  const results = (FitAddon as unknown as ReturnType<typeof vi.fn>).mock.results;
+  return results[results.length - 1]!.value as { fit: ReturnType<typeof vi.fn> };
+}
+
 beforeEach(() => {
   oscHandlers.clear();
   localStorage.clear();
@@ -202,6 +212,7 @@ function renderPane() {
       terminal: {
         fontFamily: "Geist Mono",
         fontSize: 14,
+        padding: 4,
         colorScheme: "default",
         cursorStyle: "block",
         cursorBlink: true,
@@ -253,6 +264,52 @@ describe("TerminalPane repaint registry (issue #107)", () => {
     unmount();
 
     expect(unregisterTerminalRepaint).toHaveBeenCalledExactlyOnceWith(1);
+  });
+});
+
+describe("TerminalPane pane padding (issue #91)", () => {
+  it("applies the configured padding and border-box sizing to the terminal container", () => {
+    stubFakeWebSocket(true);
+    const { container } = renderPane();
+
+    // The containerRef div is the one xterm opens into — distinguish it
+    // from the outer position:relative wrapper by its inline padding, which
+    // only this div ever sets.
+    const containerDiv = container.querySelector("div[style*='padding']") as HTMLDivElement;
+    expect(containerDiv).toBeTruthy();
+    expect(containerDiv.style.padding).toBe("4px");
+    expect(containerDiv.style.boxSizing).toBe("border-box");
+  });
+
+  it("re-fits the terminal when the padding setting changes", async () => {
+    stubFakeWebSocket(true);
+    renderPane();
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+
+    const fitAddon = getLatestFitAddonInstance();
+    fitAddon.fit.mockClear();
+
+    act(() => {
+      useDashboardStore.setState((s) => ({
+        settings: { ...s.settings, terminal: { ...s.settings.terminal, padding: 10 } },
+      }));
+    });
+
+    await waitFor(() => expect(fitAddon.fit).toHaveBeenCalled());
+  });
+
+  it("reflects a padding change in the rendered container's inline style", () => {
+    stubFakeWebSocket(true);
+    const { container } = renderPane();
+
+    act(() => {
+      useDashboardStore.setState((s) => ({
+        settings: { ...s.settings, terminal: { ...s.settings.terminal, padding: 0 } },
+      }));
+    });
+
+    const containerDiv = container.querySelector("div[style*='box-sizing']") as HTMLDivElement;
+    expect(containerDiv.style.padding).toBe("0px");
   });
 });
 
