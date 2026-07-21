@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { vi } from "vitest";
@@ -468,6 +469,146 @@ describe("internal routes (agent role, issue #26)", () => {
 
     fs.rmSync(outsideRoots, { recursive: true, force: true });
     await app.close();
+  });
+
+  describe("/internal/git-worktree (issue #100)", () => {
+    function initRepo(cwd: string) {
+      fs.mkdirSync(cwd, { recursive: true });
+      execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "pipe" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd, stdio: "pipe" });
+      execFileSync("git", ["config", "user.name", "Test"], { cwd, stdio: "pipe" });
+      fs.writeFileSync(path.join(cwd, "a.txt"), "a");
+      execFileSync("git", ["add", "-A"], { cwd, stdio: "pipe" });
+      execFileSync("git", ["commit", "-m", "initial"], { cwd, stdio: "pipe" });
+    }
+
+    it("creates a worktree on this host's own filesystem", async () => {
+      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "internal-git-worktree-root-"));
+      const cwd = path.join(repoRoot, "real-repo");
+      initRepo(cwd);
+
+      const previousRoots = process.env.PROJECTS_ROOTS;
+      process.env.PROJECTS_ROOTS = repoRoot;
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "POST",
+        url: "/internal/git-worktree",
+        headers: { authorization: `Bearer ${TOKEN}` },
+        payload: {
+          cwd,
+          projectName: "real-repo",
+          sessionId: "1",
+          prefix: "tessera/{project}-{id}",
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.branch).toBe("tessera/real-repo-1");
+      expect(fs.existsSync(body.path)).toBe(true);
+
+      process.env.PROJECTS_ROOTS = previousRoots;
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+      await app.close();
+    });
+
+    it("rejects a cwd outside this agent's PROJECTS_ROOTS", async () => {
+      const app = await buildApp();
+      const outsideRoots = fs.mkdtempSync(path.join(os.tmpdir(), "internal-git-worktree-outside-"));
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/internal/git-worktree",
+        headers: { authorization: `Bearer ${TOKEN}` },
+        payload: {
+          cwd: outsideRoots,
+          projectName: "p",
+          sessionId: "1",
+          prefix: "tessera/{project}-{id}",
+        },
+      });
+      expect(res.statusCode).toBe(400);
+
+      fs.rmSync(outsideRoots, { recursive: true, force: true });
+      await app.close();
+    });
+
+    it("rejects a baseDir outside this agent's PROJECTS_ROOTS, even with an in-roots cwd", async () => {
+      const cwd = path.join(projectsRoot, "git-repo");
+      const outsideRoots = fs.mkdtempSync(path.join(os.tmpdir(), "internal-git-worktree-basedir-"));
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "POST",
+        url: "/internal/git-worktree",
+        headers: { authorization: `Bearer ${TOKEN}` },
+        payload: {
+          cwd,
+          projectName: "p",
+          sessionId: "1",
+          prefix: "tessera/{project}-{id}",
+          baseDir: outsideRoots,
+        },
+      });
+      expect(res.statusCode).toBe(400);
+
+      fs.rmSync(outsideRoots, { recursive: true, force: true });
+      await app.close();
+    });
+
+    it("removes a clean worktree on this host's own filesystem", async () => {
+      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "internal-git-worktree-remove-root-"));
+      const cwd = path.join(repoRoot, "real-repo");
+      initRepo(cwd);
+
+      const previousRoots = process.env.PROJECTS_ROOTS;
+      process.env.PROJECTS_ROOTS = repoRoot;
+
+      const app = await buildApp();
+      const created = await app.inject({
+        method: "POST",
+        url: "/internal/git-worktree",
+        headers: { authorization: `Bearer ${TOKEN}` },
+        payload: {
+          cwd,
+          projectName: "real-repo",
+          sessionId: "1",
+          prefix: "tessera/{project}-{id}",
+        },
+      });
+      const worktreePath = created.json().path as string;
+
+      const removed = await app.inject({
+        method: "POST",
+        url: "/internal/git-worktree/remove",
+        headers: { authorization: `Bearer ${TOKEN}` },
+        payload: { cwd, worktreePath },
+      });
+      expect(removed.statusCode).toBe(204);
+      expect(fs.existsSync(worktreePath)).toBe(false);
+
+      process.env.PROJECTS_ROOTS = previousRoots;
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+      await app.close();
+    });
+
+    it("rejects a worktreePath outside this agent's PROJECTS_ROOTS for removal", async () => {
+      const app = await buildApp();
+      const outsideRoots = fs.mkdtempSync(
+        path.join(os.tmpdir(), "internal-git-worktree-remove-outside-"),
+      );
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/internal/git-worktree/remove",
+        headers: { authorization: `Bearer ${TOKEN}` },
+        payload: { cwd: path.join(projectsRoot, "git-repo"), worktreePath: outsideRoots },
+      });
+      expect(res.statusCode).toBe(400);
+
+      fs.rmSync(outsideRoots, { recursive: true, force: true });
+      await app.close();
+    });
   });
 
   it("returns this host's detected agents", async () => {
