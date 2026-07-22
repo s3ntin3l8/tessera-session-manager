@@ -412,7 +412,10 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
 
       const run = async () => {
         const projectIds = get().projects.map((p) => p.id);
-        if (projectIds.length === 0) return;
+        if (projectIds.length === 0) {
+          set({ gitStatuses: {} });
+          return;
+        }
 
         try {
           const statuses = await api.getProjectGitStatuses(projectIds);
