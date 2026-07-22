@@ -52,13 +52,16 @@ export function GitPanel({ params }: { params: GitPanelParams }) {
         const result = await api.getProjectGitStatus(params.projectId);
         if (cancelled) return;
         setStatus(result ?? null);
-      } catch {
+      } catch (err) {
         // Transient failure (a thrown ApiError for the 503 "unavailable"
-        // response, or any other network hiccup) — deliberately a no-op,
-        // not `setStatus(null)`. Keeps rendering the last-known-good status
-        // (or stays in the initial "Loading…" state if this is the very
-        // first attempt) rather than incorrectly claiming "not a git
-        // repository".
+        // response, or any other network hiccup) — deliberately a no-op on
+        // `status`, not `setStatus(null)`. Keeps rendering the last-known-good
+        // status (or stays in the initial "Loading…" state if this is the
+        // very first attempt) rather than incorrectly claiming "not a git
+        // repository". Logged at debug level (same pattern as git-status.ts's
+        // own stderr logging) so a *persistent* failure is still observable,
+        // even though a single one is intentionally invisible to the user.
+        console.debug("[GitPanel] getProjectGitStatus failed", err);
       }
     };
 

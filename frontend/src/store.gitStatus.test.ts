@@ -121,4 +121,29 @@ describe("store.refreshGitStatuses (transient-failure last-known-good)", () => {
     expect(useDashboardStore.getState().gitStatuses[1]).toBeNull();
     expect(useDashboardStore.getState().gitStatuses[2]).toEqual(CLEAN_STATUS);
   });
+
+  it("dedups overlapping calls into a single in-flight fetch batch (Hermes review, PR #164)", async () => {
+    responseByProject[1] = () => jsonResponse(200, CLEAN_STATUS);
+    responseByProject[2] = () => jsonResponse(200, CLEAN_STATUS);
+
+    // Two calls fired without awaiting the first — simulates a slow tick
+    // still in flight when the next tick's call starts. Without dedup, this
+    // would issue 4 fetches (2 projects x 2 overlapping calls); with it,
+    // the second call reuses the first's in-flight promise.
+    const first = useDashboardStore.getState().refreshGitStatuses();
+    const second = useDashboardStore.getState().refreshGitStatuses();
+    expect(second).toBe(first);
+    await Promise.all([first, second]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(useDashboardStore.getState().gitStatuses[1]).toEqual(CLEAN_STATUS);
+    expect(useDashboardStore.getState().gitStatuses[2]).toEqual(CLEAN_STATUS);
+
+    // A later call (after the first batch has fully settled) is a fresh,
+    // independent fetch batch again, not permanently deduped.
+    const third = useDashboardStore.getState().refreshGitStatuses();
+    expect(third).not.toBe(first);
+    await third;
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
 });

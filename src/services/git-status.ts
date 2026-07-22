@@ -212,6 +212,19 @@ const inFlight = new Map<string, Promise<GitStatus | null>>();
  * `getGitStatus` here) apart from "repo exists but `git status` itself
  * failed" (transient — the caller should treat a `null` result as
  * "unavailable right now", not "nothing to show"). Never throws.
+ *
+ * `cwd` here carries the exact same trust guarantee as `getGitStatus`'s own
+ * (an already-resolved project cwd or an agent-side value already passed
+ * through `resolveWithinRoots`, never a raw request value) — this function
+ * simply extracted the guard+existence-check `getGitStatus` already did
+ * inline, so it inherits that guarantee rather than introducing a new one.
+ * CodeQL's js/path-injection query re-flags the `existsSync` call below at
+ * this new location regardless (alert #48) — the same "real mitigation, not
+ * a recognized sanitizer shape" situation already dismissed on this guard's
+ * prior locations (git-remote.ts's identical guard, alerts #12/#13; this
+ * file's own pre-extraction inline check, PR #106/#111's precedent); dismiss
+ * this one the same way rather than reshaping working, already-reviewed
+ * code to satisfy the tool.
  */
 export function isGitRepo(cwd: string): boolean {
   if (!path.isAbsolute(cwd) || path.normalize(cwd).split(path.sep).includes("..")) {
