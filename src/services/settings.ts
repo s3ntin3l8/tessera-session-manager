@@ -37,6 +37,15 @@ export interface AppSettings {
     scrollback: number;
     copyOnSelect: boolean;
     pasteOnRightClick: boolean;
+    // Honors OSC 52 clipboard-write requests from the foreground program
+    // (Claude Code / opencode both copy this way — xterm.js core has no
+    // built-in OSC 52 handler, so without this the escape sequence is
+    // silently dropped and the CLI's own "copied" toast is a lie). Default
+    // on to match expected copy behavior; off lets a security-conscious user
+    // deny any PTY-run program the ability to silently overwrite their
+    // system clipboard (a paste-swap vector). OSC 52 *read* queries are
+    // never answered regardless of this setting — see TerminalPane.tsx.
+    clipboardWrite: boolean;
     reconnect: {
       enabled: boolean;
       maxAttempts: number;
@@ -95,6 +104,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     scrollback: 5000,
     copyOnSelect: true,
     pasteOnRightClick: false,
+    clipboardWrite: true,
     reconnect: {
       enabled: true,
       maxAttempts: 8,

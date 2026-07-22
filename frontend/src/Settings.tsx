@@ -135,6 +135,7 @@ const SEARCH_INDEX: Array<{ section: SettingsSection; text: string }> = [
   { section: "appearance", text: "sidebar density comfortable compact" },
   { section: "terminal", text: "scrollback lines" },
   { section: "terminal", text: "copy on select clipboard" },
+  { section: "terminal", text: "allow programs set clipboard write osc 52" },
   { section: "terminal", text: "paste on right click" },
   { section: "terminal", text: "auto reconnect drop" },
   { section: "terminal", text: "key conflict handling ctrl r l k reverse search clear kill line" },
@@ -374,6 +375,15 @@ function TerminalSection() {
         <Toggle
           on={t.pasteOnRightClick}
           onChange={(v) => updateSettings({ terminal: { pasteOnRightClick: v } })}
+        />
+      </Row>
+      <Row
+        label="Allow programs to set the clipboard"
+        desc="Lets the running CLI copy to your clipboard directly (OSC 52) — this is how Claude Code and opencode's own copy commands work."
+      >
+        <Toggle
+          on={t.clipboardWrite}
+          onChange={(v) => updateSettings({ terminal: { clipboardWrite: v } })}
         />
       </Row>
       <Row label="Auto-reconnect on drop" desc="Re-attach the socket with exponential backoff.">

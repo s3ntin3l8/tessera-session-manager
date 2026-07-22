@@ -251,6 +251,7 @@ function renderPane() {
         scrollback: 1000,
         copyOnSelect: false,
         pasteOnRightClick: false,
+        clipboardWrite: true,
         reconnect: { enabled: false, maxAttempts: 0 },
         keyCapture: { ctrlR: true, ctrlL: true, ctrlK: true },
       },
@@ -547,6 +548,85 @@ describe("TerminalPane OSC 10/11/12 query responder (issue #91)", () => {
 
     expect(handled).toBe(true);
     expect(fakeWsSend).not.toHaveBeenCalled();
+  });
+});
+
+describe("TerminalPane OSC 52 clipboard write", () => {
+  function stubClipboardWrite() {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    return writeText;
+  }
+
+  it("writes the decoded payload to the clipboard on an OSC 52 set", async () => {
+    stubFakeWebSocket(true);
+    const writeText = stubClipboardWrite();
+    renderPane();
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+
+    const handled = oscHandlers.get(52)!(`c;${btoa("hello from claude")}`);
+
+    expect(handled).toBe(true);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("hello from claude"));
+  });
+
+  it("never replies to an OSC 52 read query, regardless of the clipboardWrite setting", async () => {
+    stubFakeWebSocket(true);
+    const writeText = stubClipboardWrite();
+    renderPane();
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+    fakeWsSend.mockClear();
+
+    const handled = oscHandlers.get(52)!("c;?");
+
+    expect(handled).toBe(true);
+    expect(fakeWsSend).not.toHaveBeenCalled();
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("does not write to the clipboard when clipboardWrite is turned off", async () => {
+    stubFakeWebSocket(true);
+    const writeText = stubClipboardWrite();
+    renderPane();
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+
+    act(() => {
+      useDashboardStore.setState((s) => ({
+        settings: { ...s.settings, terminal: { ...s.settings.terminal, clipboardWrite: false } },
+      }));
+    });
+
+    const handled = oscHandlers.get(52)!(`c;${btoa("should not be copied")}`);
+
+    expect(handled).toBe(true);
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("writes the payload when Pc is omitted (some programs, e.g. tmux, skip it)", async () => {
+    stubFakeWebSocket(true);
+    const writeText = stubClipboardWrite();
+    renderPane();
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+
+    const handled = oscHandlers.get(52)!(btoa("no Pc here"));
+
+    expect(handled).toBe(true);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("no Pc here"));
+  });
+
+  it("leaves malformed base64 unhandled", async () => {
+    stubFakeWebSocket(true);
+    const writeText = stubClipboardWrite();
+    renderPane();
+    await waitFor(() => expect(fakeSocket.readyState).toBe(1));
+
+    const handled = oscHandlers.get(52)!("c;not-valid-base64!!!");
+
+    expect(handled).toBe(false);
+    expect(writeText).not.toHaveBeenCalled();
   });
 });
 

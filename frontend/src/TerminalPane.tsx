@@ -429,6 +429,49 @@ export function TerminalPane(props: {
       if (text) copyToClipboard(text);
     });
 
+    // OSC 52 — clipboard write requested by the foreground program. Claude
+    // Code / opencode both copy this way while they own mouse reporting
+    // (DECSET 1000/1002/1003/1006): a plain drag then goes to the app
+    // instead of xterm's local selection, so `onSelectionChange` above never
+    // fires — copy-on-select silently does nothing and the app's own OSC 52
+    // write is the only thing that actually carries the text. xterm.js core
+    // has no OSC 52 handling (unlike its built-in OSC 10/11/12 support
+    // above), so without this handler the escape sequence is just dropped
+    // and the CLI's "copied" toast is a lie. Registered the same way as the
+    // OSC 10/11/12 handlers above rather than via @xterm/addon-clipboard —
+    // there's no stable release of that addon for xterm 6 (0.2.0 predates
+    // the @xterm/xterm peer dep and targets xterm 5; the next one requires
+    // an xterm 6 beta), and a manual handler keeps control over the
+    // read direction (see below).
+    //
+    // Gated on the "Allow programs to set the clipboard" setting
+    // (terminal.clipboardWrite, default on) rather than copyOnSelect — this
+    // is the app explicitly writing the clipboard, not a passive selection,
+    // so it's a distinct preference with its own toggle.
+    //
+    // SECURITY: write only, never read. An OSC 52 *read* query (Pd === "?")
+    // is swallowed and never answered, unconditionally — regardless of the
+    // toggle above. Answering it would hand any program running in this PTY
+    // (including code an agent executes) the contents of the user's system
+    // clipboard.
+    const osc52Sub = term.parser.registerOscHandler(52, (data) => {
+      // Pc is optional per spec — some programs (e.g. tmux) omit it and send
+      // just the base64 payload with no leading ";". Fall back to treating
+      // the whole string as the payload in that case.
+      const semi = data.indexOf(";");
+      const payload = semi === -1 ? data : data.slice(semi + 1); // drop the Pc selection spec, unused
+      if (payload === "?") return true; // read query — swallow, never reply
+      if (!prefsRef.current.clipboardWrite) return true;
+      let text: string;
+      try {
+        text = new TextDecoder().decode(Uint8Array.from(atob(payload), (c) => c.charCodeAt(0)));
+      } catch {
+        return false; // malformed base64 — leave unhandled
+      }
+      copyToClipboard(text);
+      return true;
+    });
+
     // Ctrl+Insert — explicit copy, independent of "copy on select" (so it
     // still works when that's turned off). Registered via
     // attachKeyConflictHandler above so it works even when the browser
@@ -617,6 +660,7 @@ export function TerminalPane(props: {
       window.removeEventListener("resize", refit);
       container.removeEventListener("contextmenu", onContextMenu);
       selectionSub.dispose();
+      osc52Sub.dispose();
       dataSub.dispose();
       titleSub.dispose();
       oscColorSubs.forEach((sub) => sub.dispose());
