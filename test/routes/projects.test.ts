@@ -599,6 +599,185 @@ describe("projects route", () => {
     });
   });
 
+  describe("GET /api/projects/git-statuses (batch, issue #166)", () => {
+    it("returns an empty object when no ids are given", async () => {
+      const app = await buildApp();
+      const res = await app.inject({ method: "GET", url: "/api/projects/git-statuses" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({});
+      await app.close();
+    });
+
+    it("returns an empty object for an empty ids string", async () => {
+      const app = await buildApp();
+      const res = await app.inject({ method: "GET", url: "/api/projects/git-statuses?ids=" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({});
+      await app.close();
+    });
+
+    it("returns git status for a real local git repo", async () => {
+      const { execFileSync } = await import("node:child_process");
+      const projectCwd = fs.mkdtempSync(path.join(os.tmpdir(), "batch-git-status-real-"));
+      execFileSync("git", ["init", "-b", "main"], { cwd: projectCwd, stdio: "pipe" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], {
+        cwd: projectCwd,
+        stdio: "pipe",
+      });
+      execFileSync("git", ["config", "user.name", "Test"], { cwd: projectCwd, stdio: "pipe" });
+      fs.writeFileSync(path.join(projectCwd, "a.txt"), "a");
+      execFileSync("git", ["add", "-A"], { cwd: projectCwd, stdio: "pipe" });
+      execFileSync("git", ["commit", "-m", "initial"], { cwd: projectCwd, stdio: "pipe" });
+
+      const app = await buildApp();
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        payload: { name: "batch-real-repo", cwd: projectCwd },
+      });
+      const projectId = created.json().id as number;
+
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/projects/git-statuses?ids=${projectId}`,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body[String(projectId)]).toMatchObject({
+        branch: "main",
+        isClean: true,
+        hasConflicts: false,
+      });
+
+      fs.rmSync(projectCwd, { recursive: true, force: true });
+      await app.close();
+    });
+
+    it("returns null for a local project that isn't a git repo", async () => {
+      const projectCwd = fs.mkdtempSync(path.join(os.tmpdir(), "batch-git-status-none-"));
+      const app = await buildApp();
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        payload: { name: "batch-not-a-repo", cwd: projectCwd },
+      });
+      const projectId = created.json().id as number;
+
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/projects/git-statuses?ids=${projectId}`,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()[String(projectId)]).toBeNull();
+
+      fs.rmSync(projectCwd, { recursive: true, force: true });
+      await app.close();
+    });
+
+    it("omits a project with a transient git failure from the response", async () => {
+      const { execFileSync } = await import("node:child_process");
+      const projectCwd = fs.mkdtempSync(path.join(os.tmpdir(), "batch-git-status-transient-"));
+      execFileSync("git", ["init", "-b", "main"], { cwd: projectCwd, stdio: "pipe" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], {
+        cwd: projectCwd,
+        stdio: "pipe",
+      });
+      execFileSync("git", ["config", "user.name", "Test"], { cwd: projectCwd, stdio: "pipe" });
+      fs.writeFileSync(path.join(projectCwd, "a.txt"), "a");
+      execFileSync("git", ["add", "-A"], { cwd: projectCwd, stdio: "pipe" });
+      execFileSync("git", ["commit", "-m", "initial"], { cwd: projectCwd, stdio: "pipe" });
+      // Break HEAD so `git status` fails while `.git` still exists.
+      fs.unlinkSync(path.join(projectCwd, ".git", "HEAD"));
+
+      const app = await buildApp();
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        payload: { name: "batch-transiently-broken", cwd: projectCwd },
+      });
+      const projectId = created.json().id as number;
+
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/projects/git-statuses?ids=${projectId}`,
+      });
+      expect(res.statusCode).toBe(200);
+      // Project is omitted (not in response) because git status failed.
+      expect(res.json()).toEqual({});
+
+      fs.rmSync(projectCwd, { recursive: true, force: true });
+      await app.close();
+    });
+
+    it("omits a project on an unreachable remote host from the response", async () => {
+      const app = await buildApp();
+      const host = await app.inject({
+        method: "POST",
+        url: "/api/hosts",
+        payload: { name: "batch-remote-host", baseUrl: "http://127.0.0.1:1", token: "t" },
+      });
+      const project = await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        payload: { name: "batch-remote", cwd: "/x", hostId: host.json().id },
+      });
+      const projectId = project.json().id as number;
+
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/projects/git-statuses?ids=${projectId}`,
+      });
+      expect(res.statusCode).toBe(200);
+      // Remote host unreachable — project omitted from response.
+      expect(res.json()).toEqual({});
+
+      await app.close();
+    });
+
+    it("handles a mix of repo, non-repo, and transient-failure projects", async () => {
+      const { execFileSync } = await import("node:child_process");
+      const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "batch-mix-repo-"));
+      execFileSync("git", ["init", "-b", "main"], { cwd: repoDir, stdio: "pipe" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], {
+        cwd: repoDir,
+        stdio: "pipe",
+      });
+      execFileSync("git", ["config", "user.name", "Test"], { cwd: repoDir, stdio: "pipe" });
+      fs.writeFileSync(path.join(repoDir, "a.txt"), "a");
+      execFileSync("git", ["add", "-A"], { cwd: repoDir, stdio: "pipe" });
+      execFileSync("git", ["commit", "-m", "initial"], { cwd: repoDir, stdio: "pipe" });
+
+      const nonRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), "batch-mix-nonrepo-"));
+
+      const app = await buildApp();
+      const repo = await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        payload: { name: "batch-mix-repo", cwd: repoDir },
+      });
+      const nonRepo = await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        payload: { name: "batch-mix-nonrepo", cwd: nonRepoDir },
+      });
+      const repoId = repo.json().id as number;
+      const nonRepoId = nonRepo.json().id as number;
+
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/projects/git-statuses?ids=${repoId},${nonRepoId}`,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body[String(repoId)]).toMatchObject({ branch: "main", isClean: true });
+      expect(body[String(nonRepoId)]).toBeNull();
+
+      fs.rmSync(repoDir, { recursive: true, force: true });
+      fs.rmSync(nonRepoDir, { recursive: true, force: true });
+      await app.close();
+    });
+  });
+
   describe("GET /api/projects/:id/git-status (issue #76)", () => {
     it("404s for an unknown project", async () => {
       const app = await buildApp();
