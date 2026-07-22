@@ -6,11 +6,6 @@ import type { DetectedAgent } from "./agent-detect.js";
 import type { GitHubRepoRef } from "./git-remote.js";
 import type { GitStatus } from "./git-status.js";
 import type { GitBranchInfo, GitWorktreeInfo } from "./git-refs.js";
-import type {
-  CreateWorktreeOptions,
-  RemoveWorktreeOptions,
-  WorktreeResult,
-} from "./git-worktree.js";
 import { getHostRow, decryptToken } from "./host-registry.js";
 
 // One HTTP+WS client per remote "agent" host (issue #26), talking to its
@@ -184,27 +179,6 @@ export class RemoteHostClient {
     cwd: string,
   ): Promise<{ branches: GitBranchInfo[]; worktrees: GitWorktreeInfo[] } | null> {
     return this.request(`/internal/git-branches?cwd=${encodeURIComponent(cwd)}`);
-  }
-
-  /** Worktree isolation (issue #100) — mirrors git-worktree.ts's own
-   * createWorktree/removeWorktree signatures exactly (both run on THIS
-   * agent's filesystem, same reasoning as resolveGitStatus above), so
-   * routes/sessions.ts's local-vs-remote dispatch can call either side with
-   * an identical options object. */
-  createWorktree(opts: CreateWorktreeOptions): Promise<WorktreeResult | null> {
-    return this.request("/internal/git-worktree", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(opts),
-    });
-  }
-
-  async removeWorktree(opts: RemoveWorktreeOptions): Promise<void> {
-    await this.request("/internal/git-worktree/remove", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(opts),
-    });
   }
 
   async spawn(opts: SpawnSessionOptions): Promise<void> {
