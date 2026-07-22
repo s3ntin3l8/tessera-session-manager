@@ -18,6 +18,7 @@ These decisions apply across multiple phases and are established here to avoid r
 | API surface         | HTTP REST (existing) + Unix socket supplement                                        | Socket is an alternative transport for a subset of operations, not a separate API. Low-latency PTY I/O and local CLI integration.                                                                             |
 | Subagent detection  | Preferred: hook-based fork/join signals. Fallback: process-tree polling via `/proc`. | Hooks are clean and explicit. Process-tree polling is a no-agent-change-needed fallback. Both emit events into the same notification model.                                                                   |
 | Event persistence   | In-memory ring buffer for live feed (Phase 1); optional DB for history (Phase 4)     | Timeline and history clients need queryable event storage. Configurable retention, off by default — no regression for Phase 1's in-memory model.                                                              |
+| Task source         | GitHub issues with configurable label, polled at interval (no webhooks)              | GitHub is the existing integration. Polling avoids public-endpoint requirement for webhooks. Task state is derived from issue labels + body; the issue is source of truth.                                    |
 
 ---
 
@@ -150,20 +151,46 @@ These decisions apply across multiple phases and are established here to avoid r
 
 ---
 
-## Long-Term: Review Gate (Post-Phase 5)
+## Phase 6: Task Master
 
-**Goal:** Full Task → Agent → Review loop — describe a task, Mullion spawns the agent with context, agent pauses at review points, Mullion presents diffs for approval, user approves or sends back, cycle continues.
+**Goal:** Turn GitHub issues into autonomous agent jobs. Mullion watches for issues with a task label, spawns agents with the issue context, tracks progress via hooks, and presents results for review — closing the loop from task definition to merge-ready PR.
 
-### Status
+**Gate:** `MULLION_TASK_MASTER_ENABLED=false` (default off). When disabled, the task watcher is inert and no dashboard UI changes appear.
 
-Not yet scoped into phases. The foundation is being laid across multiple phases:
+### Features
 
-- Phase 1: Notification events provide the delivery channel for review requests
-- Phase 2: Hook signals provide the structured review-gate protocol
-- Phase 3: Browser pane lets agents show previews during the review
-- Phase 5: Subagent awareness lets review gates span multi-agent runs
+| #   | Feature                                                                                                                                                                  | Effort | Depends On                    |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ----------------------------- |
+| 6.1 | Task watcher service — background poller for issues with configurable task label (default `mullion-task`)                                                                | M      | GitHub integration (existing) |
+| 6.2 | Task state machine + REST API — `GET /api/tasks`, `GET /api/tasks/:id`, `POST /api/tasks/:id/claim`; states: Pending → Claimed → In Progress → Reviewing → Done / Failed | M      | 6.1                           |
+| 6.3 | Agent spawner — creates a terminal session with issue title + body injected as the initial prompt; session tracks back to the task                                       | M      | 6.2, 2.1 (hook socket)        |
+| 6.4 | GitHub issue state sync — auto-update labels (`mullion-claimed`, `mullion-done`), add progress comments, assign task to the agent's identity                             | S      | 6.1                           |
+| 6.5 | Tasks panel (frontend) — dockview panel listing tasks across all projects, grouped by status; each row shows title, status badge, linked session, agent name             | L      | 6.2                           |
+| 6.6 | Manual claim — "Claim" button on pending tasks; spawns agent on demand (for tasks with `Manual: true` in body)                                                           | S      | 6.5, 6.3                      |
+| 6.7 | Task → PR promotion — on user approval, create a PR from the agent's branch, add `mullion-done` label, close the issue; on rejection, return to In Progress              | M      | 6.2, 2.7 (review gate)        |
 
-The review gate itself (diff presentation, approval/resubmit cycle, context accumulation) is the final integration of these pieces into a workflow — and is a candidate for Phase 6 once the foundation is proven.
+### Design Notes
+
+- Tasks are **GitHub issues as the source of truth** — the issue is the authoritative record. Mullion's task state is a cache derived from the issue label + body fields.
+- Task context injection: issue title becomes the instruction, body becomes the spec/context. Passed as initial prompt via `MULLION_HOOK_SOCKET` (Phase 2) or environment variable at session spawn.
+- The `Manual: true` field in the issue body bypasses auto-claim — the task sits in Pending until a user clicks "Claim" in the dashboard.
+- Phase 6 ties together the entire roadmap: notifications (Phase 1) for task state changes, hooks (Phase 2) for agent progress, the review gate (2.7) for approval, the timeline (2.8) for task detail, the socket API (Phase 4) for CLI task commands, and subagents (Phase 5) for complex multi-file tasks.
+- No worktree management — the agent handles its own working directory. Mullion observes via worktree hook messages (Phase 2 design note).
+- Polling only, matching the existing GitHub integration pattern. Webhook support is a future enhancement.
+- Non-GitHub backends are out of scope for Phase 6.
+
+---
+
+## Long-Term: Post-Phase 6
+
+Once the Task Master is operational, the remaining frontier is **team-scale orchestration**:
+
+- Multi-user task queues — multiple developers submitting and reviewing tasks
+- Task dependencies — a task blocks on another's completion
+- Scheduled/recurring tasks — e.g. "run dependency update every Monday"
+- Non-GitHub backends — GitLab, Bitbucket, Jira, Linear
+
+These are not yet scoped into phases.
 
 ---
 
@@ -176,13 +203,14 @@ Phase 1 (Notifications)
   │     ├── 2.8 (Timeline) — draws from file changes (2.6) + review gates (2.7)
   │     ├── Phase 3 (Browser) — hook system triggers browser actions
   │     ├── Phase 4 (Socket API) — notification events streamed over socket
-  │     └── Phase 5 (Subagents) — hook system provides fork/join signals
-  │
+  │     ├── Phase 5 (Subagents) — hook system provides fork/join signals
+  │     └── Phase 6 (Task Master) — hook socket injects task context; review gate (2.7)
+  │                                          approves task output
   └── Phase 4 (Socket API) — notification events streamed over socket
         ├── 4.7 (History) — persistent event storage, CLI queryable
         └── Phase 5 (Subagents) — subagent events streamed over socket
 
-Review Gate = Phase 1 + Phase 2 + Phase 3 + Phase 5 integrated
+Phase 6 (Task Master) = GitHub integration + Phase 1 + Phase 2 + Phase 2.7 + Phase 5
 ```
 
 Each phase is independently shippable. Later phases consume events produced by earlier ones but don't block them.
@@ -221,6 +249,12 @@ Subagents last because:
 2. It's the most speculative — process-tree polling may need tuning against real agent behavior
 3. The visualization decisions benefit from settled notification UI patterns (Phase 1)
 
+Task Master last because:
+
+1. It integrates every preceding phase — it's the workflow that makes them useful together
+2. It depends on hooks (Phase 2) for agent progress reporting and the review gate (2.7) for approval
+3. It's gated by a flag, so it can ship as soon as Phase 2 is stable without waiting for Phases 3-5
+
 ---
 
 ## Pre-Existing Issues Mapped to Roadmap
@@ -254,6 +288,18 @@ These open issues from before the roadmap was established map directly into spec
 | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
 | [#134](https://github.com/s3ntin3l8/mullion-session-manager/issues/134) — mullion CLI, MCP server, auto-detection | CLI component maps directly to 4.6 (CLI client). MCP server extends the socket/API concept. Auto-detection is a Phase 2-adjacent enhancement. | Milestone + `phase-4` assigned |
 | [#213](https://github.com/s3ntin3l8/mullion-session-manager/issues/213) — Unified session history (4.7)           | Persistent event storage, search/filter, CLI queryable via `mullion logs`. Opt-in with configurable retention.                                | Milestone + `phase-4` assigned |
+
+### Phase 6
+
+| Issue                                                                                                         | How it fits                                                                                                             | Status                         |
+| ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| [#214](https://github.com/s3ntin3l8/mullion-session-manager/issues/214) — Task watcher service (6.1)          | Background poller for `mullion-task` labeled issues. Creates task records.                                              | Milestone + `phase-6` assigned |
+| [#215](https://github.com/s3ntin3l8/mullion-session-manager/issues/215) — Task state machine + REST API (6.2) | Task lifecycle: Pending → Claimed → In Progress → Reviewing → Done/Failed. REST endpoints for claim/approve/reject.     | Milestone + `phase-6` assigned |
+| [#216](https://github.com/s3ntin3l8/mullion-session-manager/issues/216) — Agent spawner (6.3)                 | Creates session with issue title+body as prompt. Links session to task.                                                 | Milestone + `phase-6` assigned |
+| [#217](https://github.com/s3ntin3l8/mullion-session-manager/issues/217) — GitHub issue state sync (6.4)       | Updates labels, comments, assignee on the GitHub issue as task progresses.                                              | Milestone + `phase-6` assigned |
+| [#218](https://github.com/s3ntin3l8/mullion-session-manager/issues/218) — Tasks panel frontend (6.5)          | Dockview panel listing tasks grouped by status. Detail view with embedded timeline and action buttons.                  | Milestone + `phase-6` assigned |
+| [#219](https://github.com/s3ntin3l8/mullion-session-manager/issues/219) — Manual claim (6.6)                  | "Claim" button on pending tasks; spawns agent on demand for tasks with `Manual: true`.                                  | Milestone + `phase-6` assigned |
+| [#220](https://github.com/s3ntin3l8/mullion-session-manager/issues/220) — Task → PR promotion (6.7)           | On approval, create PR from agent's branch, close issue with `mullion-done` label. On rejection, return to In Progress. | Milestone + `phase-6` assigned |
 
 ### Cross-Cutting / Standalone
 
