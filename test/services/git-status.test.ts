@@ -40,7 +40,7 @@ function initRepo(cwd: string) {
 
 function commitAll(cwd: string, message: string) {
   git(cwd, ["add", "-A"]);
-  git(cwd, ["commit", "-m", message]);
+  git(cwd, ["commit", "-m", message, "--no-verify"]);
 }
 
 describe("getGitStatus", () => {
