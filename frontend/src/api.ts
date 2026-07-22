@@ -350,6 +350,11 @@ export interface AppSettings {
     scrollback: number;
     copyOnSelect: boolean;
     pasteOnRightClick: boolean;
+    // Mirrors settings.ts's DEFAULT_SETTINGS — honors OSC 52 clipboard-write
+    // requests from the foreground program (Claude Code / opencode both copy
+    // this way). See TerminalPane.tsx for the handler and the read-side
+    // security note (OSC 52 reads are never answered, regardless of this).
+    clipboardWrite: boolean;
     reconnect: {
       enabled: boolean;
       maxAttempts: number;
@@ -414,6 +419,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     scrollback: 5000,
     copyOnSelect: true,
     pasteOnRightClick: false,
+    clipboardWrite: true,
     reconnect: {
       enabled: true,
       maxAttempts: 8,

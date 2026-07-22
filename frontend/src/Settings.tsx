@@ -376,6 +376,15 @@ function TerminalSection() {
           onChange={(v) => updateSettings({ terminal: { pasteOnRightClick: v } })}
         />
       </Row>
+      <Row
+        label="Allow programs to set the clipboard"
+        desc="Lets the running CLI copy to your clipboard directly (OSC 52) — this is how Claude Code and opencode's own copy commands work."
+      >
+        <Toggle
+          on={t.clipboardWrite}
+          onChange={(v) => updateSettings({ terminal: { clipboardWrite: v } })}
+        />
+      </Row>
       <Row label="Auto-reconnect on drop" desc="Re-attach the socket with exponential backoff.">
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <NumberField
