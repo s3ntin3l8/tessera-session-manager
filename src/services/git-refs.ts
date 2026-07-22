@@ -1,6 +1,7 @@
 import { spawn as spawnChild } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { gitEnv } from "./git-env.js";
 
 // Branch + worktree enumeration for the GitPanel (issue #162's "worktree
 // awareness" half): the repo's first `git branch`/`git worktree list`-style
@@ -36,25 +37,6 @@ export interface GitWorktreeInfo {
 }
 
 const GIT_TIMEOUT_MS = 10_000;
-
-// git honors GIT_DIR/GIT_WORK_TREE (and friends) *before* it ever looks at
-// `-C <cwd>` — if this process inherited one of these (e.g. from a git hook
-// that spawned it without clearing its own hook-scoped environment; observed
-// happening to `npm test` under pre-commit's pre-push stage), every call
-// below would silently target whatever repo GIT_DIR points at instead of the
-// caller's actual `cwd`, regardless of the explicit `-C` flag. Stripping them
-// here is what makes `-C cwd` actually authoritative.
-function gitEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_INDEX_FILE;
-  delete env.GIT_CEILING_DIRECTORIES;
-  delete env.GIT_OBJECT_DIRECTORY;
-  delete env.GIT_COMMON_DIR;
-  delete env.GIT_PREFIX;
-  return env;
-}
 
 function isSafeAbsolutePath(cwd: string): boolean {
   return path.isAbsolute(cwd) && !path.normalize(cwd).split(path.sep).includes("..");

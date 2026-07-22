@@ -8,6 +8,7 @@ import { vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type * as ChildProcess from "node:child_process";
 import { WebSocket as NodeWebSocket, WebSocketServer } from "ws";
+import { gitEnv } from "../../src/services/git-env.js";
 
 // The agent's /internal/* API (issue #26) reaches the exact same PtyManager
 // spawn/liveness path as the primary's own routes (sessions.ts, terminal.ts)
@@ -17,25 +18,6 @@ import { WebSocket as NodeWebSocket, WebSocketServer } from "ws";
 // test/services/agent-detect.test.ts fake it, combined into one mock since a
 // single "agent" role process exercises all three code paths.
 const fakePtyChildren: FakePty[] = [];
-
-// git reads several GIT_* vars (GIT_DIR chief among them) before it ever
-// looks at `cwd`, so if this process inherited them — e.g. from a git hook
-// that spawned it without clearing its own hook environment (pre-commit's
-// pre-push stage does exactly this) — every "isolated" repo the git-status/
-// git-branch tests below build would silently redirect onto whatever real
-// repo GIT_DIR points at instead of the intended tmpdir. Stripping them here
-// is what actually makes `cwd` authoritative for those execFileSync calls.
-function gitEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_INDEX_FILE;
-  delete env.GIT_CEILING_DIRECTORIES;
-  delete env.GIT_OBJECT_DIRECTORY;
-  delete env.GIT_COMMON_DIR;
-  delete env.GIT_PREFIX;
-  return env;
-}
 
 class FakePty {
   dataListeners: Array<(data: string) => void> = [];
