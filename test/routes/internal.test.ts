@@ -445,11 +445,19 @@ describe("internal routes (agent role, issue #26)", () => {
     const cwd = path.join(repoRoot, "real-repo");
     fs.mkdirSync(cwd, { recursive: true });
     execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "pipe", env: gitEnv() });
-    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd, stdio: "pipe", env: gitEnv() });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd,
+      stdio: "pipe",
+      env: gitEnv(),
+    });
     execFileSync("git", ["config", "user.name", "Test"], { cwd, stdio: "pipe", env: gitEnv() });
     fs.writeFileSync(path.join(cwd, "a.txt"), "a");
     execFileSync("git", ["add", "-A"], { cwd, stdio: "pipe", env: gitEnv() });
-    execFileSync("git", ["commit", "-m", "initial", "--no-verify"], { cwd, stdio: "pipe", env: gitEnv() });
+    execFileSync("git", ["commit", "-m", "initial", "--no-verify"], {
+      cwd,
+      stdio: "pipe",
+      env: gitEnv(),
+    });
 
     const previousRoots = process.env.PROJECTS_ROOTS;
     process.env.PROJECTS_ROOTS = repoRoot;
@@ -521,11 +529,19 @@ describe("internal routes (agent role, issue #26)", () => {
     const cwd = path.join(repoRoot, "real-repo");
     fs.mkdirSync(cwd, { recursive: true });
     execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "pipe", env: gitEnv() });
-    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd, stdio: "pipe", env: gitEnv() });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd,
+      stdio: "pipe",
+      env: gitEnv(),
+    });
     execFileSync("git", ["config", "user.name", "Test"], { cwd, stdio: "pipe", env: gitEnv() });
     fs.writeFileSync(path.join(cwd, "a.txt"), "a");
     execFileSync("git", ["add", "-A"], { cwd, stdio: "pipe", env: gitEnv() });
-    execFileSync("git", ["commit", "-m", "initial", "--no-verify"], { cwd, stdio: "pipe", env: gitEnv() });
+    execFileSync("git", ["commit", "-m", "initial", "--no-verify"], {
+      cwd,
+      stdio: "pipe",
+      env: gitEnv(),
+    });
     execFileSync("git", ["branch", "feature/foo"], { cwd, stdio: "pipe", env: gitEnv() });
 
     const previousRoots = process.env.PROJECTS_ROOTS;
