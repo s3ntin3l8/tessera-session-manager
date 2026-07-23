@@ -760,16 +760,18 @@ export async function projectsRoute(app: FastifyInstance) {
         .values({ name, cwd: resolvedCwd, hostId })
         .returning()
         .all();
-      // Best-effort: create the directory so a session spawned against
-      // this cwd doesn't fail. Read from the DB row to break CodeQL's
-      // data-flow trace from request.body.cwd — CodeQL can't trace
-      // through a DB read/write cycle. The cwd is already trusted for
-      // session spawn (full code execution at that point, same trust
-      // model as internal.ts's resolveWithinRoots when roots are
-      // configured — see the POST handler's expandHome/resolve comment).
+      // Best-effort: create the directory so a session spawned against this
+      // cwd doesn't fail. CodeQL flags this as js/path-injection since
+      // resolvedCwd derives from request.body.cwd — that's a false positive
+      // at this boundary: /api/projects is the authenticated-primary
+      // boundary, and a caller who can reach it can already spawn a session
+      // against an arbitrary cwd (full code execution), which is strictly
+      // more powerful than mkdir on the same path. Same trust model as
+      // internal.ts's resolveWithinRoots docstring for session-spawn cwd.
+      // The alert is dismissed as a false positive rather than suppressed.
       if (hostId === LOCAL_HOST_ID) {
-        await fs.promises.mkdir(created.cwd, { recursive: true }).catch((err) => {
-          app.log.warn({ err, cwd: created.cwd }, "Could not create project directory");
+        await fs.promises.mkdir(resolvedCwd, { recursive: true }).catch((err) => {
+          app.log.warn({ err, cwd: resolvedCwd }, "Could not create project directory");
         });
       }
       reply.code(201);
@@ -801,24 +803,28 @@ export async function projectsRoute(app: FastifyInstance) {
         return reply.badRequest("devServerUrl must be a 1-65535 port or a valid http(s) URL");
       }
 
+      const resolvedCwd =
+        cwd !== undefined && existing.hostId === LOCAL_HOST_ID
+          ? path.resolve(expandHome(cwd))
+          : cwd;
       const updated = app.db
         .update(projects)
         .set({
           ...(name !== undefined ? { name } : {}),
-          ...(cwd !== undefined
-            ? { cwd: existing.hostId === LOCAL_HOST_ID ? path.resolve(expandHome(cwd)) : cwd }
-            : {}),
+          ...(cwd !== undefined ? { cwd: resolvedCwd } : {}),
           ...(devServerUrl !== undefined ? { devServerUrl } : {}),
         })
         .where(eq(projects.id, projectId))
         .returning()
         .all();
       if (updated.length === 0) return reply.notFound();
-      // Same DB-read pattern as the POST handler above: read the cwd
-      // from the updated row to break CodeQL's data-flow trace.
-      if (cwd !== undefined && existing.hostId === LOCAL_HOST_ID) {
-        await fs.promises.mkdir(updated[0].cwd, { recursive: true }).catch((err) => {
-          app.log.warn({ err, cwd: updated[0].cwd }, "Could not create project directory");
+      // Best-effort, same false-positive rationale as the POST handler
+      // above: /api/projects is the authenticated-primary boundary, so
+      // mkdir on this cwd is no more powerful than the session-spawn cwd
+      // this same caller can already reach.
+      if (cwd !== undefined && existing.hostId === LOCAL_HOST_ID && resolvedCwd !== undefined) {
+        await fs.promises.mkdir(resolvedCwd, { recursive: true }).catch((err) => {
+          app.log.warn({ err, cwd: resolvedCwd }, "Could not create project directory");
         });
       }
       return updated[0];
