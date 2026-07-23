@@ -77,6 +77,9 @@ describe("notification events (issue #166)", () => {
   });
 
   afterEach(() => {
+    // Stops PtyManager's own attention-evaluator interval (issue #171/#98) —
+    // see pty-manager.test.ts's identical afterEach for why.
+    manager.killAll();
     fs.rmSync(sessionsDir, { recursive: true, force: true });
   });
 
@@ -88,7 +91,13 @@ describe("notification events (issue #166)", () => {
     throw new Error("session never became alive");
   }
 
-  it("emits an attention event exactly once on set, not on every repeated bell once the burst window has passed", async () => {
+  // Issue #171/#98: attention confirmation is now debounced through
+  // attention-detect.ts's state machine — see pty-manager.test.ts's own
+  // "activity/attention signals (WS-6)" describe block for the full
+  // transition-by-transition coverage. These two just confirm the
+  // event-emission side (issue #166's model) still fires correctly once a
+  // signal actually confirms/clears.
+  it("emits an attention event exactly once on confirm, not again on a later refresh while still confirmed", async () => {
     const session = manager.getOrCreate({
       id: "1",
       cwd: "/tmp",
@@ -98,29 +107,19 @@ describe("notification events (issue #166)", () => {
     });
     await waitForSpawn(session);
 
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const start = Date.now();
-      vi.setSystemTime(start);
-      fakePtyChildren[0].emitData("first\x07");
+    fakePtyChildren[0].emitData("first\x07");
+    session.tick(Date.now() + 2_000); // confirms -> the one attention event
 
-      // Well past ATTENTION_CLEAR_WINDOW_MS (2s) — a bell arriving here is a
-      // fresh occurrence, not a mid-burst ping, so it must NOT trip the
-      // clear-then-reset dance a rapid second bell would (see the next
-      // test): attentionAt stays continuously set, so this is not a new
-      // set/clear transition worth its own event.
-      vi.setSystemTime(start + 5000);
-      fakePtyChildren[0].emitData("second\x07");
-    } finally {
-      vi.useRealTimers();
-    }
+    // A second bell arriving once already confirmed is transition-guarded —
+    // still needs attention, but not a NEW transition, so no second emit.
+    fakePtyChildren[0].emitData("second\x07");
 
     const attentionEvents = session.getEvents().filter((e) => e.kind === "attention");
     expect(attentionEvents).toHaveLength(1);
     expect(attentionEvents[0]).toMatchObject({
       sessionId: 1,
       kind: "attention",
-      payload: { attention: true },
+      payload: { attention: true, signal: "bell" },
     });
   });
 
@@ -134,23 +133,93 @@ describe("notification events (issue #166)", () => {
     });
     await waitForSpawn(session);
 
+    fakePtyChildren[0].emitData("progress\x07");
+    session.tick(Date.now() + 2_000); // confirms -> emits attention:true
+    fakePtyChildren[0].emitData("more progress"); // clears -> emits attention:false
+
+    const attentionEvents = session.getEvents().filter((e) => e.kind === "attention");
+    expect(attentionEvents.map((e) => e.payload)).toEqual([
+      { attention: true, signal: "bell" },
+      { attention: false },
+    ]);
+  });
+
+  // #98's three new detection signals, each verified end-to-end through to
+  // a real emitEvent("attention", ...) / onEvent() delivery — not just an
+  // internal flag flip. Separate sessions per signal: once one signal
+  // confirms attention, the very next plain-output chunk is itself evidence
+  // of resumed work and clears it (see attention-detect.ts's clearAttention)
+  // — exactly the real behavior a genuine follow-up chunk (e.g. the next
+  // signal's own setup bytes) would otherwise trigger, so isolating each
+  // signal in its own session keeps this test's cause and effect obvious.
+  it("emits an attention event for a working->idle title transition (#98)", async () => {
+    const session = manager.getOrCreate({
+      id: "1",
+      cwd: "/tmp",
+      command: "claude",
+      cols: 80,
+      rows: 24,
+    });
+    await waitForSpawn(session);
+
+    fakePtyChildren[0].emitData("\x1b]2;Thinking…\x07"); // working title, no attention event
+    fakePtyChildren[0].emitData("\x1b]2;Ready\x07"); // working->idle transition
+
+    const attentionEvents = session.getEvents().filter((e) => e.kind === "attention");
+    expect(attentionEvents.map((e) => e.payload)).toEqual([
+      { attention: true, signal: "titleIdle" },
+    ]);
+  });
+
+  it("emits an attention event for an alt-screen exit (#98)", async () => {
+    const session = manager.getOrCreate({
+      id: "1",
+      cwd: "/tmp",
+      command: "bash",
+      cols: 80,
+      rows: 24,
+    });
+    await waitForSpawn(session);
+
+    fakePtyChildren[0].emitData("\x1b[?1049h"); // enter alt-screen, no attention event
+    fakePtyChildren[0].emitData("\x1b[?1049l"); // exit -> attention
+
+    const attentionEvents = session.getEvents().filter((e) => e.kind === "attention");
+    expect(attentionEvents.map((e) => e.payload)).toEqual([
+      { attention: true, signal: "altScreenExit" },
+    ]);
+  });
+
+  it("emits an attention event for sustained silence after a real work streak (#98), delivered via PtyManager.onEvent too", async () => {
+    const session = manager.getOrCreate({
+      id: "1",
+      cwd: "/tmp",
+      command: "bash",
+      cols: 80,
+      rows: 24,
+    });
+    await waitForSpawn(session);
+
+    const received: NotificationEvent[] = [];
+    manager.onEvent((event) => received.push(event));
+
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const start = Date.now();
       vi.setSystemTime(start);
-      fakePtyChildren[0].emitData("progress\x07"); // sets attention
-
-      vi.setSystemTime(start + 500); // within the burst-clear window
-      fakePtyChildren[0].emitData("more progress"); // clears attention
+      fakePtyChildren[0].emitData("agent output 1");
+      vi.setSystemTime(start + 1_200); // past SUSTAIN_MS -- a genuine streak
+      fakePtyChildren[0].emitData("agent output 2");
+      session.tick(start + 1_200 + 10_000); // sustained silence -> attention
     } finally {
       vi.useRealTimers();
     }
 
     const attentionEvents = session.getEvents().filter((e) => e.kind === "attention");
-    expect(attentionEvents.map((e) => e.payload)).toEqual([
-      { attention: true, bell: true, notification: false },
-      { attention: false },
-    ]);
+    expect(attentionEvents.map((e) => e.payload)).toEqual([{ attention: true, signal: "silence" }]);
+    // The manager-level fan-out (issue #166) picked it up too — not just
+    // the session's own ring buffer.
+    expect(received.map((e) => e.payload)).toContainEqual({ attention: true, signal: "silence" });
   });
 
   it("emits a title_change event only when the title actually changes", async () => {
@@ -295,11 +364,14 @@ describe("notification events (issue #166)", () => {
 
     fakePtyChildren[0].emitData("\x07");
     fakePtyChildren[1].emitData("\x07");
+    a.tick(Date.now() + 2_000);
+    b.tick(Date.now() + 2_000);
 
-    expect(received.map((e) => e.sessionId)).toEqual([1, 2]);
+    expect(received.map((e) => e.sessionId).sort()).toEqual([1, 2]);
 
     unsubscribe();
     fakePtyChildren[0].emitData("more\x07");
+    a.tick(Date.now() + 10_000);
     expect(received).toHaveLength(2); // unsubscribed — no further delivery
   });
 
@@ -310,7 +382,8 @@ describe("notification events (issue #166)", () => {
     await waitForSpawn(b);
 
     fakePtyChildren[0].emitData("\x07");
-    fakePtyChildren[1].emitData("\x1b]2;hi\x07");
+    a.tick(Date.now() + 2_000); // confirms -> attention event
+    fakePtyChildren[1].emitData("\x1b]2;hi\x07"); // title_change fires regardless of the attention machine
 
     const all = manager.listEvents();
     expect(all).toHaveLength(2);

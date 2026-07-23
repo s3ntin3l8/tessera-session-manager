@@ -184,10 +184,18 @@ describe("events route (/ws/events)", () => {
     const messages = collectJsonMessages(ws);
     await waitForOpenOrClose(ws);
 
-    pty.emitData("done\x07");
+    // A working->idle title transition (#98) is a zero-threshold attention
+    // signal (see ATTENTION_CONFIRM_MS in attention-detect.ts) — confirms
+    // synchronously, unlike a bare bell (debounced against attention-detect.ts's
+    // PENDING_ATTENTION state machine — see issue #171), which needs either a
+    // real ~2s wait or a direct Session.tick() call this route-level test has
+    // no access to.
+    pty.emitData("\x1b]2;working\x07");
+    await waitUntil(() => messages.some((m) => m.kind === "title_change"));
+    pty.emitData("\x1b]2;idle\x07");
     await waitUntil(() => messages.some((m) => m.kind === "attention"));
     const attentionEvent = messages.find((m) => m.kind === "attention");
-    expect(attentionEvent?.payload).toEqual({ attention: true, bell: true, notification: false });
+    expect(attentionEvent?.payload).toEqual({ attention: true, signal: "titleIdle" });
 
     ws.close();
     await app.close();

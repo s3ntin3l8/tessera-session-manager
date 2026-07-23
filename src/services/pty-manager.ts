@@ -10,8 +10,13 @@ import {
   detectAltScreenSwitch,
   applyMouseModeChanges,
   carryPartialEscape,
+  advanceAttention,
   INITIAL_MOUSE_TRACKING_STATE,
+  INITIAL_ATTENTION_STATE,
   type MouseTrackingState,
+  type AttentionMachineState,
+  type AttentionSignalKind,
+  type AttentionTransition,
 } from "./attention-detect.js";
 import { buildSessionEnv } from "./session-env.js";
 
@@ -66,13 +71,17 @@ export interface SessionInfo {
    * work), else "idle" — a coarse heuristic, not a real "is the program
    * busy" signal. */
   activity: "working" | "idle";
-  /** True once a BEL or OSC 9/777 notification sequence has been observed
-   * without being cleared since — see the attention-clear check in
-   * Session.spawn()'s onData, which treats a bell followed by another chunk
-   * within ATTENTION_CLEAR_WINDOW_MS as a work-in-progress ping rather than
-   * a "waiting for input" signal. */
+  /** True once one of the attention signals in attention-detect.ts's state
+   * machine (BEL, OSC 9/777 notification, a working->idle title transition,
+   * an alt-screen exit, or sustained silence after a work streak) has been
+   * CONFIRMED — i.e. survived its own per-kind debounce window uncontradicted
+   * by further output — without being cleared since. See Session.attentionState
+   * and advanceAttention() in attention-detect.ts for the full state machine
+   * (issue #171/#98) this replaces the old ad-hoc ATTENTION_CLEAR_WINDOW_MS
+   * check with. */
   attention: boolean;
-  /** Ms-epoch of the most recent attention signal, or null if none yet. */
+  /** Ms-epoch this session was last confirmed as needing attention, or null
+   * if never (or since cleared) — Session.attentionState.confirmedAt. */
   attentionAt: number | null;
   /** Payload of the most recent OSC 0/2 title-change sequence — consulted by
    * classifyActivityFromTitle() for a fast-path "working"/"idle" read on
@@ -159,10 +168,38 @@ const NUDGE_REPAINT_GRACE_MS = 500;
 // server-persisted value from Settings -> Notifications & status instead.
 const IDLE_THRESHOLD_MS = 2_000;
 
-// A bell/notification arriving mid-burst (another chunk within this window
-// either side of it) is a work-in-progress ping, not a "waiting for input"
-// signal — see the attention-clear check in Session.spawn()'s onData.
-const ATTENTION_CLEAR_WINDOW_MS = 2_000;
+// A session that was genuinely working (a sustained activity streak — see
+// SUSTAIN_MS below) and then falls silent for at least this long is the
+// #98 "sustained silence after work" attention signal: quiet for long
+// enough after real output that it's more likely waiting on the user than
+// merely between status pings. Deliberately more generous than
+// IDLE_THRESHOLD_MS/STREAK_GAP_MS (which classify the coarse working/idle
+// poll field, expected to flip on ordinary short pauses) — this signal
+// instead feeds attention-detect.ts's state machine (as the zero-threshold
+// "silence" kind — see ATTENTION_CONFIRM_MS's own comment for why), so
+// firing it too eagerly would turn every brief lull into a false "needs
+// attention". Evaluated periodically by Session.tick(), never from onData
+// directly — see ATTENTION_EVAL_INTERVAL_MS below for why this needs its
+// own timer at all.
+const SUSTAINED_SILENCE_MS = 10_000;
+
+// How often PtyManager's own attention-evaluator interval runs
+// Session.tick() across every tracked session — the ONE new timer this PR
+// (#171/#98) adds; see attention-detect.ts's "Attention state machine"
+// comment for why PENDING_ATTENTION -> ATTENTION and the sustained-silence
+// signal above are both fundamentally time-based (no byte arrives at the
+// exact moment silence becomes "confirmed"), unlike every other signal in
+// this file which is driven straight off onData. Mirrors the re-armable
+// setInterval/.unref() shape src/plugins/pty.ts already uses for
+// session-reconciler.ts's 30s exited-session sweep — kept comfortably below
+// ATTENTION_CONFIRM_MS's shortest nonzero threshold (notification's 1s) so
+// a confirmation is never meaningfully delayed past when it's actually due.
+// Deliberately NOT gated behind MULLION_ROLE === "primary" the way the
+// reconciler is (see src/plugins/pty.ts): this evaluator is pure in-memory
+// state, no DB access, and PtyManager itself is constructed on an agent
+// role too — gating it would silently strand every remote-agent session's
+// pending/silent attention signals unconfirmed forever.
+const ATTENTION_EVAL_INTERVAL_MS = 500;
 
 // A gap of at least this long since the previous chunk starts a fresh
 // activity streak — see the streak tracking in onData. Deliberately larger
@@ -294,7 +331,18 @@ export class Session {
   private lastSeenSeq = 0;
   private lastActivityAt: number | null = null;
   private activityStreakStart: number | null = null;
-  private attentionAt: number | null = null;
+  // The attention state machine's own state (issue #171/#98) — see
+  // advanceAttention() in attention-detect.ts. Replaces the old bare
+  // `attentionAt: number | null` field entirely: `attentionState.confirmedAt`
+  // IS this session's public attentionAt (see toInfo()), folded into the
+  // machine's state so there's only ever one timestamp to keep in sync.
+  private attentionState: AttentionMachineState = INITIAL_ATTENTION_STATE;
+  // Last title-derived working/idle read (classifyActivityFromTitle), kept
+  // ONLY to detect the #98 working->idle TRANSITION (a program that was
+  // working just went idle — "ready for input") — distinct from `activity`
+  // in toInfo(), which recomputes this from scratch on every poll and has
+  // no memory of the previous read.
+  private lastTitleActivity: "working" | "idle" | null = null;
   private lastTitle: string | null = null;
   // Ms-epoch of the last write() call (user keystrokes, plus a couple of
   // automated terminal-protocol replies routed through the same browser->pty
@@ -494,6 +542,11 @@ export class Session {
       // duplicate the carried bytes in the replayed stream).
       const detectChunk = this.detectCarry + data;
       const altScreenSwitch = detectAltScreenSwitch(detectChunk);
+      // #98: exiting alt-screen (a TUI/editor closing back to the shell
+      // prompt) is itself an attention candidate — "done, awaiting input".
+      // Only a genuine alt -> primary flip counts, never a chunk that
+      // merely re-asserts a mode already tracked.
+      let altScreenExited = false;
       if (altScreenSwitch !== null) {
         // Transition-guarded (issue #166): detectAltScreenSwitch reports the
         // switch a chunk landed on even when that's the same mode already
@@ -504,26 +557,13 @@ export class Session {
         // buffer with no-op repeats.
         const nowInAltScreen = altScreenSwitch === "alt";
         if (nowInAltScreen !== this.inAltScreen) {
+          altScreenExited = this.inAltScreen && !nowInAltScreen;
           this.inAltScreen = nowInAltScreen;
           this.emitEvent("status_change", { screen: altScreenSwitch });
         }
       }
       this.mouseTracking = applyMouseModeChanges(detectChunk, this.mouseTracking);
       this.detectCarry = carryPartialEscape(detectChunk);
-
-      // A bell arriving mid-burst was a work-in-progress notification, not a
-      // "waiting for input" signal — clear the sticky attention flag. Reads
-      // the PREVIOUS chunk's timestamp, before it's overwritten below.
-      if (this.attentionAt !== null && this.lastActivityAt !== null) {
-        if (Date.now() - this.lastActivityAt < ATTENTION_CLEAR_WINDOW_MS) {
-          this.attentionAt = null;
-          // Issue #166: the clear is itself a byte-driven transition (the
-          // NEXT chunk arriving is what proves the earlier bell was
-          // work-in-progress, not a real "waiting for input" state) — emit
-          // it the same way the initial set below does.
-          this.emitEvent("attention", { attention: false });
-        }
-      }
 
       const now = Date.now();
       // A gap longer than STREAK_GAP_MS since the last chunk starts a new
@@ -535,28 +575,47 @@ export class Session {
       this.lastActivityAt = now;
 
       const signals = detectAttentionSignals(data);
-      if (signals.bell || signals.notification) {
-        // Transition-guarded: a session already flagged for attention that
-        // sees ANOTHER bell/notification before anything clears the first
-        // one is still just "still needs attention," not a new transition —
-        // only the initial set (false -> true) is byte-driven-transition
-        // worthy of its own event (issue #166).
-        const wasAttention = this.attentionAt !== null;
-        this.attentionAt = Date.now();
-        if (!wasAttention) {
-          this.emitEvent("attention", {
-            attention: true,
-            bell: signals.bell,
-            notification: signals.notification,
-          });
-        }
-      }
+
+      // #98: a working->idle TITLE transition ("program that was working
+      // just became idle") is an attention candidate — only on an actual
+      // title CHANGE (matches the de-dup below, and means a session that
+      // never had a "working" title read to transition FROM can't false-fire
+      // on its very first idle title).
+      let titleWentIdle = false;
       if (signals.titleChange !== null) {
         if (signals.titleChange !== this.lastTitle) {
           this.emitEvent("title_change", { title: signals.titleChange });
+          const newTitleActivity = classifyActivityFromTitle(signals.titleChange, this.command);
+          if (this.lastTitleActivity === "working" && newTitleActivity === "idle") {
+            titleWentIdle = true;
+          }
+          if (newTitleActivity !== null) this.lastTitleActivity = newTitleActivity;
         }
         this.lastTitle = signals.titleChange;
       }
+
+      // Attention state machine (issue #171/#98) — feed this chunk's
+      // strongest candidate signal (or, if it carries none, its mere
+      // arrival as plain output) through advanceAttention(). Priority when
+      // more than one signal lands in the SAME chunk (rare but possible —
+      // e.g. a TUI's alt-screen exit and its title flip to idle in one
+      // read): the more deliberate, zero-threshold signals win over a bare
+      // bell, the noisiest of the four and exactly what PENDING_ATTENTION's
+      // debounce exists to tame (see attention-detect.ts).
+      let candidateKind: AttentionSignalKind | null = null;
+      if (altScreenExited) candidateKind = "altScreenExit";
+      else if (titleWentIdle) candidateKind = "titleIdle";
+      else if (signals.notification) candidateKind = "notification";
+      else if (signals.bell) candidateKind = "bell";
+
+      this.applyAttentionTransition(
+        advanceAttention(
+          this.attentionState,
+          candidateKind !== null
+            ? { type: "signal", kind: candidateKind, now }
+            : { type: "output", now },
+        ),
+      );
 
       for (const listener of this.dataListeners) listener(chunk);
     });
@@ -681,9 +740,12 @@ export class Session {
    * out to live subscribers (mirrors pushScrollback's FIFO-eviction shape
    * and dataListeners' fan-out shape respectively). Only ever called from
    * genuinely byte-driven (or exit-driven) transitions — see onData/onExit
-   * below — never from a poll, so callers don't need their own dedup: each
-   * call site already only calls this when its own tracked state actually
-   * changed.
+   * below — or from the attention state machine's own time-based
+   * confirmations (tick(), via applyAttentionTransition() below) — never
+   * from a plain poll, so callers don't need their own dedup: each call
+   * site already only calls this when its own tracked state actually
+   * changed (advanceAttention()'s transition-guards give tick() the same
+   * guarantee onData's other call sites already have).
    */
   private emitEvent(kind: NotificationEvent["kind"], payload: Record<string, unknown>): void {
     this.eventSeq += 1;
@@ -697,6 +759,85 @@ export class Session {
     this.events.push(event);
     if (this.events.length > EVENTS_MAX) this.events.shift();
     for (const listener of this.eventListeners) listener(event);
+  }
+
+  /**
+   * Apply one advanceAttention() result: adopt the new machine state, turn
+   * any `log` entries into debug lines (the issue's "add debug logging on
+   * attention state transitions" ask — matches this file's existing
+   * console.error(...) logging shape; Session has no Fastify logger to hang
+   * this off, see spawn()'s own console.error call), and turn any `emit`
+   * entries into real emitEvent("attention", ...) calls. The one place
+   * onData/tick() ever touch `this.attentionState` — keeps every call site
+   * from having to duplicate this bookkeeping.
+   */
+  private applyAttentionTransition(transition: AttentionTransition): void {
+    for (const entry of transition.log) {
+      // Skip PENDING_ATTENTION churn (entering it from idle, or being
+      // cancelled back to idle from it without ever confirming) — during
+      // exactly the bursty-signal scenario issue #171 exists to fix, this
+      // is by far the highest-frequency transition, and logging every one
+      // would spam stdout at the same frequency this PR is suppressing
+      // false positives for (console.debug bypasses pino's level filter
+      // entirely — see spawn()'s console.error for why Session logs this
+      // way at all). Only the meaningful edges — a signal actually
+      // CONFIRMING attention, or a confirmed session actually CLEARING
+      // back to idle — are worth a line.
+      const isPendingChurn =
+        entry.to === "pending_attention" ||
+        (entry.from === "pending_attention" && entry.to === "idle");
+      if (isPendingChurn) continue;
+      console.debug(
+        `[pty-manager] session ${this.id} attention: ${entry.from} -> ${entry.to}` +
+          (entry.kind ? ` (${entry.kind})` : ""),
+      );
+    }
+    this.attentionState = transition.next;
+    // Spread into a plain object: AttentionEmit's fixed shape (no index
+    // signature) doesn't structurally satisfy emitEvent's deliberately
+    // loose Record<string, unknown> payload type otherwise.
+    for (const emit of transition.emit) this.emitEvent("attention", { ...emit });
+  }
+
+  /**
+   * The attention state machine's time-based half (issue #171/#98) — called
+   * periodically by PtyManager's own evaluator interval (see
+   * ATTENTION_EVAL_INTERVAL_MS), never from onData. Two independent checks:
+   *
+   * 1. Promote a still-PENDING_ATTENTION signal to ATTENTION once it's gone
+   *    uncontradicted long enough (advanceAttention's "tick" input) — the
+   *    ONLY way a nonzero-threshold signal (bell/notification) ever
+   *    confirms when the program stays genuinely silent afterward; nothing
+   *    byte-driven would ever re-check it.
+   * 2. The #98 "sustained silence after work" signal: a session that had a
+   *    real, sustained activity streak (same `sustained` computation
+   *    toInfo() uses) and has since gone quiet for at least
+   *    SUSTAINED_SILENCE_MS raises a zero-threshold "silence" candidate.
+   *    Gated to `attentionState.state === "idle"` — if a signal is already
+   *    pending or confirmed, that already covers "something's up", and (2)
+   *    running AFTER (1) in the same tick() call means this reads
+   *    already-updated state rather than racing it.
+   *
+   * `now` is a parameter (defaulting to Date.now()) rather than read
+   * unconditionally inside, purely so tests can call this directly with a
+   * synthetic clock instead of needing fake real timers — see
+   * test/services/pty-manager.test.ts.
+   */
+  tick(now: number = Date.now()): void {
+    this.applyAttentionTransition(advanceAttention(this.attentionState, { type: "tick", now }));
+
+    const hadSustainedStreak =
+      this.activityStreakStart !== null &&
+      this.lastActivityAt !== null &&
+      this.lastActivityAt - this.activityStreakStart >= SUSTAIN_MS;
+    const silentLongEnough =
+      this.lastActivityAt !== null && now - this.lastActivityAt >= SUSTAINED_SILENCE_MS;
+
+    if (this.attentionState.state === "idle" && hadSustainedStreak && silentLongEnough) {
+      this.applyAttentionTransition(
+        advanceAttention(this.attentionState, { type: "signal", kind: "silence", now }),
+      );
+    }
   }
 
   /** Subscribe to this session's own notification events as they're emitted
@@ -880,8 +1021,8 @@ export class Session {
       subscriberCount: this.subscriberCount,
       lastActivityAt: this.lastActivityAt,
       activity,
-      attention: this.attentionAt !== null,
-      attentionAt: this.attentionAt,
+      attention: this.attentionState.confirmedAt !== null,
+      attentionAt: this.attentionState.confirmedAt,
       lastTitle: this.lastTitle,
     };
   }
@@ -897,6 +1038,12 @@ export class PtyManager {
   // the single subscription point routes/events.ts's /ws/events needs to
   // see every session's events without subscribing to each one individually.
   private eventListeners = new Set<EventListener>();
+  // The one new timer this PR (#171/#98) adds — see ATTENTION_EVAL_INTERVAL_MS's
+  // doc comment for why it lives here (unconditionally, not gated behind
+  // MULLION_ROLE like session-reconciler.ts's timer in src/plugins/pty.ts)
+  // rather than as a per-Session timer: one interval regardless of session
+  // count, mirroring the reconciler's own single-timer-for-N-sessions shape.
+  private readonly attentionEvalTimer: ReturnType<typeof setInterval>;
 
   constructor(opts: { sessionsDir: string }) {
     // Must be absolute: dtach is spawned with cwd set to the *session's*
@@ -905,6 +1052,14 @@ export class PtyManager {
     // dtach would look for the socket in the wrong place entirely.
     this.sessionsDir = path.resolve(opts.sessionsDir);
     mkdirSync(this.sessionsDir, { recursive: true });
+
+    // unref() so this timer alone never keeps the process (or, in tests, a
+    // PtyManager instance nobody explicitly tore down) alive — same
+    // reasoning as src/plugins/pty.ts's reconcile timer.
+    this.attentionEvalTimer = setInterval(() => {
+      for (const session of this.sessions.values()) session.tick();
+    }, ATTENTION_EVAL_INTERVAL_MS);
+    this.attentionEvalTimer.unref();
   }
 
   private socketPathFor(id: string): string {
@@ -1007,6 +1162,11 @@ export class PtyManager {
 
   /** Kill every tracked attach-client. Called on server shutdown; the dtach masters survive. */
   killAll(): void {
+    // Defense-in-depth alongside attentionEvalTimer's own unref() — same
+    // "stop it explicitly on shutdown too, don't rely on unref() alone"
+    // posture as src/plugins/pty.ts's onClose hook takes with its
+    // reconcile timer.
+    clearInterval(this.attentionEvalTimer);
     for (const id of [...this.sessions.keys()]) this.kill(id);
   }
 
