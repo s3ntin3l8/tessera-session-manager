@@ -121,6 +121,13 @@ export const hooksPlugin = fp(async (app: FastifyInstance) => {
 
   app.decorate("hookServer", server);
 
+  // CodeQL (js/missing-rate-limiting) flags this hook: it performs a
+  // filesystem access (unlinkSync) with no rate-limit decorator of its own.
+  // Reviewed — not applicable, same category as the identical flag on
+  // src/plugins/auth.ts's onRequest hook: `onClose` runs exactly once, at
+  // graceful shutdown, triggered by this process's own lifecycle
+  // (app.close()) — never per-request, never on any attacker-reachable
+  // trigger a rate limiter could meaningfully throttle.
   app.addHook("onClose", () => {
     server.close();
     try {
