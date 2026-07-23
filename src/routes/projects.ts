@@ -740,7 +740,7 @@ export async function projectsRoute(app: FastifyInstance) {
 
   app.post<{ Body: CreateProjectBody }>(
     "/api/projects",
-    { schema: createProjectSchema },
+    { schema: createProjectSchema, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
     async (request, reply) => {
       const { name, cwd } = request.body;
       const hostId = request.body.hostId ?? LOCAL_HOST_ID;
@@ -754,7 +754,7 @@ export async function projectsRoute(app: FastifyInstance) {
       // "local": a remote project's cwd expands against the *agent's* own
       // home dir, not this process's — see host-registry.ts/issue #26's
       // landmine #3 — so it's stored/forwarded raw instead.
-      const resolvedCwd = hostId === LOCAL_HOST_ID ? expandHome(cwd) : cwd;
+      const resolvedCwd = hostId === LOCAL_HOST_ID ? path.resolve(expandHome(cwd)) : cwd;
       const [created] = app.db
         .insert(projects)
         .values({ name, cwd: resolvedCwd, hostId })
@@ -762,7 +762,7 @@ export async function projectsRoute(app: FastifyInstance) {
         .all();
       if (hostId === LOCAL_HOST_ID) {
         try {
-          await fs.promises.mkdir(path.resolve(resolvedCwd), { recursive: true });
+          await fs.promises.mkdir(resolvedCwd, { recursive: true });
         } catch (err) {
           app.log.warn({ err, cwd: resolvedCwd }, "Could not create project directory");
         }
@@ -779,7 +779,7 @@ export async function projectsRoute(app: FastifyInstance) {
   // initial create does, rather than silently producing an unspawnable cwd.
   app.patch<{ Params: { id: string }; Body: UpdateProjectBody }>(
     "/api/projects/:id",
-    { schema: updateProjectSchema },
+    { schema: updateProjectSchema, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
     async (request, reply) => {
       const projectId = Number(request.params.id);
       if (!Number.isInteger(projectId)) return reply.badRequest("Invalid project id");
@@ -796,25 +796,28 @@ export async function projectsRoute(app: FastifyInstance) {
         return reply.badRequest("devServerUrl must be a 1-65535 port or a valid http(s) URL");
       }
 
+      const newCwd =
+        cwd !== undefined
+          ? existing.hostId === LOCAL_HOST_ID
+            ? path.resolve(expandHome(cwd))
+            : cwd
+          : undefined;
       const updated = app.db
         .update(projects)
         .set({
           ...(name !== undefined ? { name } : {}),
-          ...(cwd !== undefined
-            ? { cwd: existing.hostId === LOCAL_HOST_ID ? expandHome(cwd) : cwd }
-            : {}),
+          ...(newCwd !== undefined ? { cwd: newCwd } : {}),
           ...(devServerUrl !== undefined ? { devServerUrl } : {}),
         })
         .where(eq(projects.id, projectId))
         .returning()
         .all();
       if (updated.length === 0) return reply.notFound();
-      if (cwd !== undefined && existing.hostId === LOCAL_HOST_ID) {
-        const resolvedCwd = expandHome(cwd);
+      if (newCwd !== undefined && existing.hostId === LOCAL_HOST_ID) {
         try {
-          await fs.promises.mkdir(path.resolve(resolvedCwd), { recursive: true });
+          await fs.promises.mkdir(newCwd, { recursive: true });
         } catch (err) {
-          app.log.warn({ err, cwd: resolvedCwd }, "Could not create project directory");
+          app.log.warn({ err, cwd: newCwd }, "Could not create project directory");
         }
       }
       return updated[0];
