@@ -863,13 +863,23 @@ body {
 
 .session-item {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 2px;
   padding: 6px 8px 6px 9px;
   margin-left: 6px;
   border-radius: 8px;
   cursor: grab;
   color: var(--fg);
+}
+/* Issue #167's status line lives as a second row below this one — this row
+   holds all of the original single-line content (dot/logo/name/label/close)
+   with the layout .session-item itself used to have before it became a
+   column. */
+.session-item-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 .session-item:active {
   cursor: grabbing;
@@ -967,6 +977,23 @@ body {
 .session-status-label.killed {
   color: var(--r);
   opacity: 0.85;
+}
+/* Issue #167 — latest notification-event text, one line below the session
+   name/title. Idle-ish events (title changes, alt-screen flips, exit, an
+   attention "clear") get the gray/italic treatment; a live attention event
+   reuses the same --ring accent as the attention dot/status-label above. */
+.session-event-line {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--dim);
+  padding-left: 22px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-event-line.attention {
+  font-style: normal;
+  color: var(--ring);
 }
 .session-item-close {
   flex-shrink: 0;
