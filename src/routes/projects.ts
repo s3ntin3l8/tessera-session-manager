@@ -783,8 +783,7 @@ export async function projectsRoute(app: FastifyInstance) {
       if (hostId === LOCAL_HOST_ID) {
         const mkdirCwd = ensureLocalCwd(cwd, hostId, app);
         if (mkdirCwd) {
-          // codeql[js/path-injection] — cwd already trusted for session
-          // spawn (full code exec); root-constrained by ensureLocalCwd.
+          // codeql[js/path-injection]
           await fs.promises.mkdir(mkdirCwd, { recursive: true }).catch((err) => {
             app.log.warn({ err, cwd: mkdirCwd }, "Could not create project directory");
           });
@@ -835,8 +834,7 @@ export async function projectsRoute(app: FastifyInstance) {
       if (cwd !== undefined && existing.hostId === LOCAL_HOST_ID) {
         const mkdirCwd = ensureLocalCwd(cwd, existing.hostId, app);
         if (mkdirCwd) {
-          // codeql[js/path-injection] — cwd already trusted for session
-          // spawn (full code exec); root-constrained by ensureLocalCwd.
+          // codeql[js/path-injection]
           await fs.promises.mkdir(mkdirCwd, { recursive: true }).catch((err) => {
             app.log.warn({ err, cwd: mkdirCwd }, "Could not create project directory");
           });
