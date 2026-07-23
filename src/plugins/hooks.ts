@@ -2,6 +2,7 @@ import fp from "fastify-plugin";
 import type { FastifyInstance } from "fastify";
 import net from "node:net";
 import { chmodSync, unlinkSync } from "node:fs";
+import { parseHookMessage } from "../services/hook-protocol.js";
 
 // Phase 2's structured agent-hook channel (issue #172) — a second,
 // structured channel alongside the existing PTY-parsed one (attention-detect.ts):
@@ -11,10 +12,13 @@ import { chmodSync, unlinkSync } from "node:fs";
 // this listener attributes each connection to a session via a handshake
 // token (MULLION_HOOK_TOKEN), validated through app.pty.resolveToken().
 //
-// This PR only wires the socket + handshake; actual protocol parsing
-// (notification/progress/file_change/review_gate/fork/join) lands in a
-// follow-up PR (issue #173) — a validated, attributed line is logged here as
-// a placeholder, not yet routed anywhere.
+// Every line after a successful handshake is validated against the wire
+// protocol (issue #173, see hook-protocol.ts) — a malformed line gets a
+// `{"error":...}` reply and the connection stays open (only a failed
+// *handshake*, or an oversized/unterminated line, closes the connection
+// outright); a valid one is logged here as a placeholder. Routing validated
+// messages into the Phase 1 notification event model lands in a follow-up
+// PR (issue #176).
 //
 // No impact on an agent that never connects: the socket exists (like the
 // dtach sockets already do) but sits idle otherwise.
@@ -76,11 +80,24 @@ function handleConnection(app: FastifyInstance, socket: net.Socket): void {
         continue;
       }
 
-      // Protocol parsing/validation (issue #173) and routing into the
-      // notification event model (issue #176) both land in follow-up PRs —
-      // for now this is a deliberate stub: log that a validated, attributed
-      // line arrived, and do nothing else with it yet.
-      app.log.debug({ sessionId, line }, "hook message received (unparsed)");
+      const result = parseHookMessage(line);
+      if (!result.ok) {
+        // Malformed *message* (as opposed to a malformed *handshake*, which
+        // closes the connection above) gets an error reply but keeps the
+        // connection open — a single bad line from an otherwise-well-behaved
+        // agent shouldn't force it to reconnect and re-handshake.
+        if (socket.writable) {
+          socket.write(`${JSON.stringify({ error: result.error })}\n`);
+        }
+        app.log.warn({ sessionId, error: result.error }, "malformed hook message");
+        continue;
+      }
+
+      // Routing validated messages into the Phase 1 notification event
+      // model (issue #176) lands in a follow-up PR — for now this is a
+      // deliberate stub: log the parsed, attributed message and do nothing
+      // else with it yet.
+      app.log.debug({ sessionId, message: result.message }, "hook message received");
     }
   });
 
