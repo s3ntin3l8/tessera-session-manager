@@ -43,7 +43,9 @@ export function describeEvent(
           const title = typeof event.payload.title === "string" ? event.payload.title : null;
           const body = typeof event.payload.body === "string" ? event.payload.body : null;
           if (title && body) return { text: `${title} — ${body}`, attention: true };
-          return { text: title ?? "Sent a notification", attention: true };
+          // `||`, not `??`: an empty-string title (falsy but non-null) must
+          // also fall through to the generic message, not render as blank text.
+          return { text: title || "Sent a notification", attention: true };
         }
         case "reviewGate": {
           // Phase 2 (issue #176) — the attention-flip half of a review_gate

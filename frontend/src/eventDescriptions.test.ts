@@ -43,6 +43,16 @@ describe("eventDescriptions (Phase 2, issue #176)", () => {
       });
       expect(describeEvent(event)).toEqual({ text: "Sent a notification", attention: true });
     });
+
+    it("falls back to a generic message for an empty-string title, not blank text", () => {
+      // Regression test: `title ?? fallback` would NOT fall back here since
+      // "" is non-null/non-undefined — only `title || fallback` catches it.
+      const event = makeEvent({
+        kind: "attention",
+        payload: { attention: true, signal: "hookNotification", title: "" },
+      });
+      expect(describeEvent(event)).toEqual({ text: "Sent a notification", attention: true });
+    });
   });
 
   describe("describeEvent — reviewGate signal (the attention-flip half)", () => {

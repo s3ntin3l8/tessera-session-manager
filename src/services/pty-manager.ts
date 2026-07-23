@@ -880,18 +880,24 @@ export class Session {
 
   /**
    * Drives the attention state machine with a zero-threshold hook signal
-   * (hookNotification/reviewGate — see ATTENTION_CONFIRM_MS) and, only if a
-   * transition actually confirms NEW attention (not a no-op refresh of an
-   * already-confirmed session — see confirmAttention()'s `alreadyConfirmed`
-   * guard), emits the resulting "attention" event with `extras` merged into
-   * its payload. Deliberately does NOT go through applyAttentionTransition()
-   * above (used by every PTY-parsed call site): that spreads only
-   * AttentionEmit's fixed `{attention, signal}` shape into the emitted
-   * event — title/body/prompt have nowhere to go there, and threading
-   * hook-specific display text through the otherwise-pure, byte-driven
-   * attention state machine isn't worth it for two call sites. Mirrors its
-   * state-update + emit-if-nonempty shape otherwise, just without the
-   * console.debug transition logging (kept only on the byte-driven path).
+   * (hookNotification/reviewGate — see ATTENTION_CONFIRM_MS) to keep
+   * `attentionState`/`SessionInfo.attention` correct, and unconditionally
+   * emits an "attention" event with `extras` merged into its payload —
+   * deliberately NOT gated on whether the transition itself produced a new
+   * `emit` entry. confirmAttention()'s `alreadyConfirmed` guard suppresses
+   * emitting again when attention was already confirmed, which is correct
+   * for the generic, content-free PTY-parsed signals applyAttentionTransition()
+   * handles (a second bell while already confirmed is genuinely nothing
+   * new) — but a hook notification's title/body (or a review_gate's prompt)
+   * is never "nothing new": each one is distinct content the event feed
+   * must surface even if the boolean itself was already true. Deliberately
+   * does NOT go through applyAttentionTransition() above for this reason,
+   * and also because AttentionEmit's fixed `{attention, signal}` shape has
+   * no room for title/body/prompt anyway — threading hook-specific display
+   * text through the otherwise-pure, byte-driven attention state machine
+   * isn't worth it for two call sites. Skips the console.debug transition
+   * logging applyAttentionTransition() does (kept only on the byte-driven
+   * path).
    */
   private emitAttentionSignalWithExtras(
     kind: Extract<AttentionSignalKind, "hookNotification" | "reviewGate">,
@@ -903,9 +909,7 @@ export class Session {
       now: Date.now(),
     });
     this.attentionState = transition.next;
-    for (const emit of transition.emit) {
-      this.emitEvent("attention", { ...emit, ...extras });
-    }
+    this.emitEvent("attention", { attention: true, signal: kind, ...extras });
   }
 
   /**

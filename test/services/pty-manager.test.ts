@@ -1509,6 +1509,36 @@ describe("PtyManager", () => {
       expect(session.toInfo().attention).toBe(true);
     });
 
+    it("notification: still emits a fresh event with new title/body even when attention is already confirmed", async () => {
+      // Regression test: confirmAttention()'s `alreadyConfirmed` guard
+      // suppresses re-emitting for a repeat GENERIC signal (correct for a
+      // second bell while already confirmed) — but a hook notification's
+      // title/body is never "nothing new", and emitAttentionSignalWithExtras()
+      // must not silently drop it just because attention was already true.
+      const session = manager.getOrCreate({
+        id: "1",
+        cwd: "/tmp",
+        command: "bash",
+        cols: 80,
+        rows: 24,
+      });
+      await waitForSpawn(session);
+
+      session.emitHookEvent({ kind: "notification", title: "First", body: "one" });
+      expect(session.toInfo().attention).toBe(true);
+
+      session.emitHookEvent({ kind: "notification", title: "Second", body: "two" });
+
+      const attentionEvents = session.getEvents().filter((e) => e.kind === "attention");
+      expect(attentionEvents).toHaveLength(2);
+      expect(attentionEvents[1].payload).toEqual({
+        attention: true,
+        signal: "hookNotification",
+        title: "Second",
+        body: "two",
+      });
+    });
+
     it("progress: emits a status_change event with the phase, no attention change", async () => {
       const session = manager.getOrCreate({
         id: "1",
