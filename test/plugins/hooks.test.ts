@@ -68,6 +68,20 @@ function waitForClose(socket: net.Socket): Promise<void> {
   });
 }
 
+/** Resolves with the first complete newline-terminated line the server
+ * writes back (issue #173's error-reply path) — used by the "malformed
+ * message gets an error reply but stays open" tests below. */
+function waitForLine(socket: net.Socket): Promise<string> {
+  return new Promise((resolve) => {
+    let buffer = "";
+    socket.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex !== -1) resolve(buffer.slice(0, newlineIndex));
+    });
+  });
+}
+
 describe("hooksPlugin (issue #172)", () => {
   let app: Awaited<ReturnType<typeof buildApp>> | null = null;
 
@@ -191,5 +205,83 @@ describe("hooksPlugin (issue #172)", () => {
     } finally {
       await second.close();
     }
+  });
+
+  describe("hook message protocol (issue #173)", () => {
+    async function handshakedSocket(app_: Awaited<ReturnType<typeof buildApp>>) {
+      const session = app_.pty.getOrCreate({
+        id: "1",
+        cwd: "/tmp",
+        command: "bash",
+        cols: 80,
+        rows: 24,
+      });
+      const socket = await connect(app_.pty.hookSocketPath);
+      socket.write(`${JSON.stringify({ token: session.hookToken })}\n`);
+      return socket;
+    }
+
+    it("accepts a well-formed message with no error reply and keeps the connection open", async () => {
+      app = await buildApp();
+      await app.ready();
+      const socket = await handshakedSocket(app);
+
+      const replies: string[] = [];
+      socket.on("data", (chunk: Buffer) => replies.push(chunk.toString("utf8")));
+      socket.write(`${JSON.stringify({ kind: "notification", title: "hi", body: "there" })}\n`);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(replies).toEqual([]);
+      expect(socket.destroyed).toBe(false);
+      socket.destroy();
+    });
+
+    it("replies with a JSON error for a malformed message but keeps the connection open", async () => {
+      app = await buildApp();
+      await app.ready();
+      const socket = await handshakedSocket(app);
+
+      socket.write(`${JSON.stringify({ kind: "notification", title: "missing body" })}\n`);
+      const replyLine = await waitForLine(socket);
+
+      const reply = JSON.parse(replyLine);
+      expect(reply).toHaveProperty("error");
+      expect(socket.destroyed).toBe(false);
+      socket.destroy();
+    });
+
+    it("survives a malformed message and still accepts a well-formed one afterward", async () => {
+      app = await buildApp();
+      await app.ready();
+      const socket = await handshakedSocket(app);
+
+      socket.write("not json\n");
+      await waitForLine(socket);
+
+      // The connection is still alive — a second, well-formed message after
+      // the error reply produces no further error line.
+      const repliesAfter: string[] = [];
+      socket.on("data", (chunk: Buffer) => repliesAfter.push(chunk.toString("utf8")));
+      socket.write(`${JSON.stringify({ kind: "progress", phase: "thinking" })}\n`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(repliesAfter).toEqual([]);
+      expect(socket.destroyed).toBe(false);
+      socket.destroy();
+    });
+
+    it("accepts an unrecognized kind (extensibility) with no error reply", async () => {
+      app = await buildApp();
+      await app.ready();
+      const socket = await handshakedSocket(app);
+
+      const replies: string[] = [];
+      socket.on("data", (chunk: Buffer) => replies.push(chunk.toString("utf8")));
+      socket.write(`${JSON.stringify({ kind: "some_future_kind", extra: "field" })}\n`);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(replies).toEqual([]);
+      socket.destroy();
+    });
   });
 });
