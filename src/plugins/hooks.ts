@@ -16,9 +16,9 @@ import { parseHookMessage } from "../services/hook-protocol.js";
 // protocol (issue #173, see hook-protocol.ts) — a malformed line gets a
 // `{"error":...}` reply and the connection stays open (only a failed
 // *handshake*, or an oversized/unterminated line, closes the connection
-// outright); a valid one is logged here as a placeholder. Routing validated
-// messages into the Phase 1 notification event model lands in a follow-up
-// PR (issue #176).
+// outright); a valid one is routed into the Phase 1 notification event
+// model via PtyManager.emitHookEvent() (issue #176, see pty-manager.ts's
+// Session.emitHookEvent for the per-kind mapping).
 //
 // No impact on an agent that never connects: the socket exists (like the
 // dtach sockets already do) but sits idle otherwise.
@@ -93,11 +93,8 @@ function handleConnection(app: FastifyInstance, socket: net.Socket): void {
         continue;
       }
 
-      // Routing validated messages into the Phase 1 notification event
-      // model (issue #176) lands in a follow-up PR — for now this is a
-      // deliberate stub: log the parsed, attributed message and do nothing
-      // else with it yet.
       app.log.debug({ sessionId, message: result.message }, "hook message received");
+      app.pty.emitHookEvent(sessionId, result.message);
     }
   });
 

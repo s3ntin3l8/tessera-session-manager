@@ -36,6 +36,25 @@ export function describeEvent(
           return { text: "Gone quiet — needs input", attention: true };
         case "notification":
           return { text: "Sent a notification", attention: true };
+        case "hookNotification": {
+          // Phase 2 (issue #176) — a hook `notification` message, unlike the
+          // PTY-parsed OSC 9/777 signal above, carries real title/body text
+          // (see pty-manager.ts's Session.emitHookEvent); show it when present.
+          const title = typeof event.payload.title === "string" ? event.payload.title : null;
+          const body = typeof event.payload.body === "string" ? event.payload.body : null;
+          if (title && body) return { text: `${title} — ${body}`, attention: true };
+          return { text: title ?? "Sent a notification", attention: true };
+        }
+        case "reviewGate": {
+          // Phase 2 (issue #176) — the attention-flip half of a review_gate
+          // "waiting" message; the "review_gate" case below describes the
+          // paired event carrying the full gate state.
+          const prompt = typeof event.payload.prompt === "string" ? event.payload.prompt : null;
+          return {
+            text: prompt ? `Waiting for review: ${prompt}` : "Waiting for review",
+            attention: true,
+          };
+        }
         default:
           // A future signal kind this hasn't been taught yet.
           return { text: "Needs input", attention: true };
@@ -49,12 +68,44 @@ export function describeEvent(
       if (event.payload.screen === "primary") {
         return { text: "Exited full-screen mode", attention: false };
       }
+      // Phase 2 (issue #176) — a hook `progress` message maps to
+      // status_change with just a `phase` field (see
+      // pty-manager.ts's Session.emitHookEvent); routine, not attention-worthy.
+      if (typeof event.payload.phase === "string") {
+        return { text: `Agent: ${event.payload.phase}`, attention: false };
+      }
       return null;
     }
     case "title_change":
       return typeof event.payload.title === "string"
         ? { text: event.payload.title, attention: false }
         : null;
+    // Phase 2 (issue #176) — the two kinds sourced from the structured hook
+    // channel rather than PTY parsing (see pty-manager.ts's
+    // Session.emitHookEvent for the payload shapes these mirror).
+    case "file_change": {
+      const path = typeof event.payload.path === "string" ? event.payload.path : null;
+      if (!path) return null;
+      const verb =
+        event.payload.action === "create"
+          ? "Created"
+          : event.payload.action === "delete"
+            ? "Deleted"
+            : "Changed";
+      return { text: `${verb} ${path}`, attention: false };
+    }
+    case "review_gate": {
+      const prompt = typeof event.payload.prompt === "string" ? event.payload.prompt : null;
+      if (event.payload.state === "waiting") {
+        return {
+          text: prompt ? `Waiting for review: ${prompt}` : "Waiting for review",
+          attention: true,
+        };
+      }
+      if (event.payload.state === "approved") return { text: "Review approved", attention: false };
+      if (event.payload.state === "denied") return { text: "Review denied", attention: false };
+      return null;
+    }
     default:
       return null;
   }
@@ -85,15 +136,21 @@ export function describeLatestEvent(
 // "notification" rather than routine chatter, and which icon that gets.
 // Deliberately narrower than "every event with a describeEvent result": the
 // events stream also carries title_change (fires on every OSC title
-// update) and alt-screen status_change (fires on every TUI open/close) —
-// both routine, high-frequency, and not what a user means by "notification".
-// Only two kinds count: an attention signal actually ringing (not its own
-// "cleared" counterpart), and a program exiting. Used by PaneTab.tsx's
-// unread tab badge (issue #168) and NotificationBell.tsx's event feed +
-// unread bell count (issue #169) — both must agree on this set, or the
-// panel and the tab badges it's meant to summarize could disagree.
+// update), alt-screen status_change (fires on every TUI open/close), and
+// (Phase 2) file_change (fires on every reported edit) — all routine,
+// high-frequency, and not what a user means by "notification". A hook
+// `notification` message already counts via the existing "attention" kind
+// check below (see pty-manager.ts's Session.emitHookEvent, which emits it
+// under kind "attention" just like every PTY-parsed signal); `review_gate`
+// in state "waiting" is the one Phase 2 addition that needs its own check
+// here, since it's its own NotificationEvent kind, not folded into
+// "attention". Used by PaneTab.tsx's unread tab badge (issue #168) and
+// NotificationBell.tsx's event feed + unread bell count (issue #169) — both
+// must agree on this set, or the panel and the tab badges it's meant to
+// summarize could disagree.
 export function notifyKind(event: NotificationEvent): "attention" | "exited" | null {
   if (event.kind === "attention" && event.payload.attention === true) return "attention";
   if (event.kind === "status_change" && event.payload.reason === "exited") return "exited";
+  if (event.kind === "review_gate" && event.payload.state === "waiting") return "attention";
   return null;
 }

@@ -1482,4 +1482,149 @@ describe("PtyManager", () => {
       expect(manager.resolveToken(second.hookToken)).toBe("1");
     });
   });
+
+  describe("emitHookEvent (issue #176)", () => {
+    it("notification: emits an attention event carrying title/body and flips SessionInfo.attention", async () => {
+      const session = manager.getOrCreate({
+        id: "1",
+        cwd: "/tmp",
+        command: "bash",
+        cols: 80,
+        rows: 24,
+      });
+      await waitForSpawn(session);
+      expect(session.toInfo().attention).toBe(false);
+
+      session.emitHookEvent({ kind: "notification", title: "Build done", body: "0 errors" });
+
+      const events = session.getEvents();
+      const event = events[events.length - 1];
+      expect(event.kind).toBe("attention");
+      expect(event.payload).toEqual({
+        attention: true,
+        signal: "hookNotification",
+        title: "Build done",
+        body: "0 errors",
+      });
+      expect(session.toInfo().attention).toBe(true);
+    });
+
+    it("progress: emits a status_change event with the phase, no attention change", async () => {
+      const session = manager.getOrCreate({
+        id: "1",
+        cwd: "/tmp",
+        command: "bash",
+        cols: 80,
+        rows: 24,
+      });
+      await waitForSpawn(session);
+
+      session.emitHookEvent({ kind: "progress", phase: "thinking" });
+
+      const events = session.getEvents();
+      const event = events[events.length - 1];
+      expect(event.kind).toBe("status_change");
+      expect(event.payload).toEqual({ phase: "thinking" });
+      expect(session.toInfo().attention).toBe(false);
+    });
+
+    it("file_change: emits a file_change event with path and action", async () => {
+      const session = manager.getOrCreate({
+        id: "1",
+        cwd: "/tmp",
+        command: "bash",
+        cols: 80,
+        rows: 24,
+      });
+      await waitForSpawn(session);
+
+      session.emitHookEvent({ kind: "file_change", path: "src/index.ts", action: "modify" });
+
+      const events = session.getEvents();
+      const event = events[events.length - 1];
+      expect(event.kind).toBe("file_change");
+      expect(event.payload).toEqual({ path: "src/index.ts", action: "modify" });
+    });
+
+    it("review_gate (waiting): emits a review_gate event AND flips attention with the prompt attached", async () => {
+      const session = manager.getOrCreate({
+        id: "1",
+        cwd: "/tmp",
+        command: "bash",
+        cols: 80,
+        rows: 24,
+      });
+      await waitForSpawn(session);
+      expect(session.toInfo().attention).toBe(false);
+
+      session.emitHookEvent({
+        kind: "review_gate",
+        state: "waiting",
+        prompt: "Run rm -rf /tmp/build?",
+      });
+
+      const events = session.getEvents();
+      expect(events.map((e) => e.kind)).toEqual(["review_gate", "attention"]);
+      expect(events[0].payload).toEqual({
+        state: "waiting",
+        prompt: "Run rm -rf /tmp/build?",
+      });
+      expect(events[1].payload).toEqual({
+        attention: true,
+        signal: "reviewGate",
+        prompt: "Run rm -rf /tmp/build?",
+      });
+      expect(session.toInfo().attention).toBe(true);
+    });
+
+    it("review_gate (approved/denied): emits a review_gate event only, no attention change", async () => {
+      const session = manager.getOrCreate({
+        id: "1",
+        cwd: "/tmp",
+        command: "bash",
+        cols: 80,
+        rows: 24,
+      });
+      await waitForSpawn(session);
+
+      session.emitHookEvent({ kind: "review_gate", state: "approved", prompt: "x" });
+
+      const events = session.getEvents();
+      expect(events.map((e) => e.kind)).toEqual(["review_gate"]);
+      expect(session.toInfo().attention).toBe(false);
+    });
+
+    it("fork/join: validated but not surfaced as events yet (Phase 5)", async () => {
+      const session = manager.getOrCreate({
+        id: "1",
+        cwd: "/tmp",
+        command: "bash",
+        cols: 80,
+        rows: 24,
+      });
+      await waitForSpawn(session);
+
+      session.emitHookEvent({ kind: "fork", childPid: 1234 });
+      session.emitHookEvent({ kind: "join", childPid: 1234 });
+
+      expect(session.getEvents()).toHaveLength(0);
+    });
+
+    it("PtyManager.emitHookEvent() routes to the right session by id", async () => {
+      const a = manager.getOrCreate({ id: "1", cwd: "/tmp", command: "bash", cols: 80, rows: 24 });
+      const b = manager.getOrCreate({ id: "2", cwd: "/tmp", command: "bash", cols: 80, rows: 24 });
+      await waitForSpawn(a);
+      await waitForSpawn(b);
+
+      manager.emitHookEvent("2", { kind: "progress", phase: "done" });
+
+      expect(a.getEvents()).toHaveLength(0);
+      expect(b.getEvents()).toHaveLength(1);
+      expect(b.getEvents()[0].payload).toEqual({ phase: "done" });
+    });
+
+    it("PtyManager.emitHookEvent() is a no-op for an id it isn't tracking", () => {
+      expect(() => manager.emitHookEvent("999", { kind: "progress", phase: "done" })).not.toThrow();
+    });
+  });
 });

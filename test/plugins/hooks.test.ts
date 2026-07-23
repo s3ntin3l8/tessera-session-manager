@@ -284,4 +284,66 @@ describe("hooksPlugin (issue #172)", () => {
       socket.destroy();
     });
   });
+
+  describe("routing into the notification event model (issue #176)", () => {
+    it("a real notification message flips SessionInfo.attention and appears in app.pty.listEvents()", async () => {
+      app = await buildApp();
+      await app.ready();
+      const session = app.pty.getOrCreate({
+        id: "1",
+        cwd: "/tmp",
+        command: "bash",
+        cols: 80,
+        rows: 24,
+      });
+      expect(session.toInfo().attention).toBe(false);
+
+      const socket = await connect(app.pty.hookSocketPath);
+      socket.write(`${JSON.stringify({ token: session.hookToken })}\n`);
+      socket.write(
+        `${JSON.stringify({ kind: "notification", title: "Build done", body: "0 errors" })}\n`,
+      );
+
+      // Poll rather than a fixed sleep: the socket data event and this
+      // process's own event emission are both async relative to write().
+      for (let i = 0; i < 50 && !session.toInfo().attention; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
+      expect(session.toInfo().attention).toBe(true);
+      const events = app.pty.listEvents();
+      expect(
+        events.some((e) => e.kind === "attention" && e.payload.signal === "hookNotification"),
+      ).toBe(true);
+      socket.destroy();
+    });
+
+    it("a real review_gate waiting message appears as its own event kind", async () => {
+      app = await buildApp();
+      await app.ready();
+      const session = app.pty.getOrCreate({
+        id: "1",
+        cwd: "/tmp",
+        command: "bash",
+        cols: 80,
+        rows: 24,
+      });
+
+      const socket = await connect(app.pty.hookSocketPath);
+      socket.write(`${JSON.stringify({ token: session.hookToken })}\n`);
+      socket.write(
+        `${JSON.stringify({ kind: "review_gate", state: "waiting", prompt: "Deploy?" })}\n`,
+      );
+
+      for (let i = 0; i < 50 && session.getEvents().length === 0; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
+      const events = session.getEvents();
+      expect(events.some((e) => e.kind === "review_gate" && e.payload.state === "waiting")).toBe(
+        true,
+      );
+      socket.destroy();
+    });
+  });
 });
