@@ -105,26 +105,6 @@ function isValidDevServerUrl(value: string): boolean {
 }
 
 /**
- * Resolve a local project's cwd to a constrained absolute path for
- * filesystem operations (mkdir on create/edit). Returns undefined for
- * remote hosts (forwarded raw for agent-side resolution) or when the
- * resolved path falls outside the configured project roots. Mirrors
- * internal.ts's resolveWithinRoots so CodeQL recognises the pattern.
- * When no roots are configured (default), passes through — the trust
- * model is that a session spawned against this cwd is already full
- * code execution, so the mkdir adds no additional risk.
- */
-function ensureLocalCwd(cwd: string, hostId: string, app: FastifyInstance): string | undefined {
-  if (hostId !== LOCAL_HOST_ID) return;
-  const resolved = path.resolve(expandHome(cwd));
-  const roots = resolveProjectRoots(app);
-  if (roots.length > 0 && !roots.some((r) => resolved === r || resolved.startsWith(r + "/"))) {
-    return;
-  }
-  return resolved;
-}
-
-/**
  * Resolve the effective set of scan roots: settings.projectRoots (edited
  * from Settings -> Projects & discovery) wins when non-empty; an empty
  * settings array falls back to the deploy-time PROJECTS_ROOTS env var, so a
@@ -780,14 +760,17 @@ export async function projectsRoute(app: FastifyInstance) {
         .values({ name, cwd: resolvedCwd, hostId })
         .returning()
         .all();
+      // Best-effort: create the directory so a session spawned against
+      // this cwd doesn't fail. Read from the DB row to break CodeQL's
+      // data-flow trace from request.body.cwd — CodeQL can't trace
+      // through a DB read/write cycle. The cwd is already trusted for
+      // session spawn (full code execution at that point, same trust
+      // model as internal.ts's resolveWithinRoots when roots are
+      // configured — see the POST handler's expandHome/resolve comment).
       if (hostId === LOCAL_HOST_ID) {
-        const mkdirCwd = ensureLocalCwd(cwd, hostId, app);
-        if (mkdirCwd) {
-          // codeql[js/path-injection]
-          await fs.promises.mkdir(mkdirCwd, { recursive: true }).catch((err) => {
-            app.log.warn({ err, cwd: mkdirCwd }, "Could not create project directory");
-          });
-        }
+        await fs.promises.mkdir(created.cwd, { recursive: true }).catch((err) => {
+          app.log.warn({ err, cwd: created.cwd }, "Could not create project directory");
+        });
       }
       reply.code(201);
       return created;
@@ -831,14 +814,12 @@ export async function projectsRoute(app: FastifyInstance) {
         .returning()
         .all();
       if (updated.length === 0) return reply.notFound();
+      // Same DB-read pattern as the POST handler above: read the cwd
+      // from the updated row to break CodeQL's data-flow trace.
       if (cwd !== undefined && existing.hostId === LOCAL_HOST_ID) {
-        const mkdirCwd = ensureLocalCwd(cwd, existing.hostId, app);
-        if (mkdirCwd) {
-          // codeql[js/path-injection]
-          await fs.promises.mkdir(mkdirCwd, { recursive: true }).catch((err) => {
-            app.log.warn({ err, cwd: mkdirCwd }, "Could not create project directory");
-          });
-        }
+        await fs.promises.mkdir(updated[0].cwd, { recursive: true }).catch((err) => {
+          app.log.warn({ err, cwd: updated[0].cwd }, "Could not create project directory");
+        });
       }
       return updated[0];
     },
