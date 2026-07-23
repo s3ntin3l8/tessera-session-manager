@@ -117,14 +117,24 @@ export function classifyActivityFromTitle(
 // into actual emitEvent("attention", ...) calls and debug log lines.
 export type AttentionState = "idle" | "pending_attention" | "attention" | "clearing";
 
-// The four kinds of candidate "something needs the user's attention"
-// signal this module recognizes. `silence` is distinct from the other
-// three: it's never detected here (there's no byte to scan for it — see
+// The candidate "something needs the user's attention" signal kinds this
+// module recognizes. `silence` is distinct from the PTY-parsed four before
+// it: it's never detected here (there's no byte to scan for it — see
 // pty-manager.ts's Session.tick doc comment) but shares this machine and
 // its `signal` input shape once the caller has independently decided a
-// sustained work streak has gone quiet for long enough.
+// sustained work streak has gone quiet for long enough. `hookNotification`
+// and `reviewGate` (Phase 2, issue #176) are the structured-channel
+// counterpart of the same idea: an agent's hook message, rather than a
+// terminal escape sequence, deciding attention is needed — see
+// pty-manager.ts's Session.emitHookEvent.
 export type AttentionSignalKind =
-  "bell" | "notification" | "titleIdle" | "altScreenExit" | "silence";
+  | "bell"
+  | "notification"
+  | "titleIdle"
+  | "altScreenExit"
+  | "silence"
+  | "hookNotification"
+  | "reviewGate";
 
 // How long a candidate signal must go uncontradicted (no further output at
 // all) before PENDING_ATTENTION confirms into ATTENTION. Deliberately
@@ -153,6 +163,21 @@ export const ATTENTION_CONFIRM_MS: Record<AttentionSignalKind, number> = {
   // layering a second wait on top here would just double-count the same
   // silence.
   silence: 0,
+  // Phase 2 (issue #176): a hook `notification` message is a deliberate,
+  // explicit API call an agent makes specifically to signal something
+  // happened — same reasoning as the PTY-parsed `notification` kind above,
+  // just arriving over the structured channel instead of an OSC 9/777
+  // escape sequence. Already a discrete, one-shot event by construction
+  // (there's no "per-render-frame" analogue for a hook message the way a
+  // bare bell has), so no debounce is needed.
+  hookNotification: 0,
+  // A hook `review_gate` message announcing `state: "waiting"` is the
+  // clearest possible "needs the user's attention" signal Phase 2 has: the
+  // agent is explicitly blocked pending a human decision, not merely
+  // reporting routine progress. Zero debounce for the same reason as
+  // titleIdle/altScreenExit above — it's already a discrete, deliberate
+  // transition, not a noise source to wait out.
+  reviewGate: 0,
 };
 
 export interface AttentionMachineState {

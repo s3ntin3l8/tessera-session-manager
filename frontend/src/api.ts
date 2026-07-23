@@ -116,11 +116,13 @@ export interface Session {
 // a consumer keys read/unread state off (sessionId, seq) together, never
 // seq alone. Streamed over the new /ws/events channel (eventsClient.ts);
 // the existing `attention`/`activity`/`lastTitle` fields on Session above
-// stay poll-derived and unchanged — this is purely additive.
+// stay poll-derived and unchanged — this is purely additive. `file_change`
+// and `review_gate` (Phase 2, issue #176) are the first two kinds sourced
+// from the structured agent hook channel rather than PTY parsing.
 export interface NotificationEvent {
   seq: number;
   sessionId: number;
-  kind: "attention" | "status_change" | "title_change";
+  kind: "attention" | "status_change" | "title_change" | "file_change" | "review_gate";
   ts: number;
   payload: Record<string, unknown>;
 }

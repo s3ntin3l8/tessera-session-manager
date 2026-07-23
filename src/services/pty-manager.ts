@@ -21,6 +21,7 @@ import {
   type AttentionTransition,
 } from "./attention-detect.js";
 import { buildSessionEnv } from "./session-env.js";
+import type { HookMessage } from "./hook-protocol.js";
 
 // Bridges browser terminals to real, host-persistent processes.
 //
@@ -99,15 +100,17 @@ type ExitListener = () => void;
 // distinct from `SessionInfo`'s poll-derived snapshot fields above. `seq` is
 // per-session and monotonic (starts at 1), not globally unique — a consumer
 // keys read/unread state off (sessionId, seq) together, never seq alone
-// (two different sessions both legitimately have a seq:1). `kind` is
-// deliberately a small closed set for this PR; the roadmap's later phases
-// extend it (`file_change`, `review_gate`, ...) without needing a shape
-// change here. Deliberately does NOT include a `working`/`idle` kind — see
-// Session.onData's own comment on why activity stays poll-derived.
+// (two different sessions both legitimately have a seq:1). `file_change` and
+// `review_gate` (Phase 2, issue #176) are the first two kinds sourced from
+// the structured hook channel (src/plugins/hooks.ts) rather than PTY
+// parsing — exactly the extension the original closed set anticipated, with
+// no shape change needed here. Deliberately does NOT include a
+// `working`/`idle` kind — see Session.onData's own comment on why activity
+// stays poll-derived.
 export interface NotificationEvent {
   seq: number;
   sessionId: number;
-  kind: "attention" | "status_change" | "title_change";
+  kind: "attention" | "status_change" | "title_change" | "file_change" | "review_gate";
   ts: number;
   payload: Record<string, unknown>;
 }
@@ -833,6 +836,83 @@ export class Session {
   }
 
   /**
+   * Routes one validated hook message (issue #173's protocol, see
+   * hook-protocol.ts) into this session's notification event model (issue
+   * #176) — the structured-channel counterpart of the byte-driven
+   * emitEvent()/applyAttentionTransition() call sites above. `notification`
+   * and `review_gate` (state "waiting") additionally drive the attention
+   * state machine via emitAttentionSignalWithExtras() below, so
+   * SessionInfo.attention/attentionAt — and everything that reads them
+   * (Kanban's "Needs Attention" column, the sidebar's status dot) — react
+   * too, not just the event feed. `fork`/`join` are validated by the
+   * protocol layer but not surfaced here at all yet — that's Phase 5's
+   * subagent-awareness work; a future/unrecognized kind the protocol layer
+   * already accepts verbatim (extensibility) is likewise a no-op here until
+   * a later phase teaches this method about it.
+   */
+  emitHookEvent(message: HookMessage): void {
+    switch (message.kind) {
+      case "notification":
+        this.emitAttentionSignalWithExtras("hookNotification", {
+          title: message.title,
+          body: message.body,
+        });
+        return;
+      case "progress":
+        this.emitEvent("status_change", { phase: message.phase });
+        return;
+      case "file_change":
+        this.emitEvent("file_change", { path: message.path, action: message.action });
+        return;
+      case "review_gate":
+        this.emitEvent("review_gate", { state: message.state, prompt: message.prompt });
+        if (message.state === "waiting") {
+          this.emitAttentionSignalWithExtras("reviewGate", { prompt: message.prompt });
+        }
+        return;
+      case "fork":
+      case "join":
+        return;
+      default:
+        return;
+    }
+  }
+
+  /**
+   * Drives the attention state machine with a zero-threshold hook signal
+   * (hookNotification/reviewGate — see ATTENTION_CONFIRM_MS) to keep
+   * `attentionState`/`SessionInfo.attention` correct, and unconditionally
+   * emits an "attention" event with `extras` merged into its payload —
+   * deliberately NOT gated on whether the transition itself produced a new
+   * `emit` entry. confirmAttention()'s `alreadyConfirmed` guard suppresses
+   * emitting again when attention was already confirmed, which is correct
+   * for the generic, content-free PTY-parsed signals applyAttentionTransition()
+   * handles (a second bell while already confirmed is genuinely nothing
+   * new) — but a hook notification's title/body (or a review_gate's prompt)
+   * is never "nothing new": each one is distinct content the event feed
+   * must surface even if the boolean itself was already true. Deliberately
+   * does NOT go through applyAttentionTransition() above for this reason,
+   * and also because AttentionEmit's fixed `{attention, signal}` shape has
+   * no room for title/body/prompt anyway — threading hook-specific display
+   * text through the otherwise-pure, byte-driven attention state machine
+   * isn't worth it for two call sites. Skips the console.debug transition
+   * logging applyAttentionTransition() does (kept only on the byte-driven
+   * path).
+   */
+  private emitAttentionSignalWithExtras(
+    kind: Extract<AttentionSignalKind, "hookNotification" | "reviewGate">,
+    extras: Record<string, unknown>,
+  ): void {
+    const transition = advanceAttention(this.attentionState, {
+      type: "signal",
+      kind,
+      now: Date.now(),
+    });
+    this.attentionState = transition.next;
+    this.emitEvent("attention", { attention: true, signal: kind, ...extras });
+  }
+
+  /**
    * The attention state machine's time-based half (issue #171/#98) — called
    * periodically by PtyManager's own evaluator interval (see
    * ATTENTION_EVAL_INTERVAL_MS), never from onData. Two independent checks:
@@ -1196,6 +1276,19 @@ export class PtyManager {
    * as every other per-id lookup in this class (e.g. get()). */
   markEventsSeen(id: string, seq: number): void {
     this.sessions.get(id)?.markEventsSeen(seq);
+  }
+
+  /** Routes one validated hook message (src/plugins/hooks.ts) to the session
+   * it's attributed to — a no-op (not an error) for an id this process
+   * isn't tracking, the same "unknown id is harmless" shape as every other
+   * per-id lookup in this class. In practice this should never actually be
+   * unknown: hooks.ts only ever calls this with an id resolveToken() just
+   * returned, and resolveToken() only ever returns ids of tracked sessions —
+   * but a session could in principle be killed in the gap between resolving
+   * a message's token and this call reaching it, so the no-op fallback
+   * matters, not just consistency with markEventsSeen(). */
+  emitHookEvent(id: string, message: HookMessage): void {
+    this.sessions.get(id)?.emitHookEvent(message);
   }
 
   /** Kill our tracked attach-client only (detach); the dtach master + program survive. */
