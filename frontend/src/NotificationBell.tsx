@@ -124,6 +124,7 @@ export function NotificationBell({ onOpenSession }: { onOpenSession: (session: S
   const dismissedEventKeys = useDashboardStore((s) => s.dismissedEventKeys);
   const markEventSeen = useDashboardStore((s) => s.markEventSeen);
   const dismissEvent = useDashboardStore((s) => s.dismissEvent);
+  const openRequest = useDashboardStore((s) => s.notificationsPanelOpenRequest);
 
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
@@ -174,6 +175,23 @@ export function NotificationBell({ onOpenSession }: { onOpenSession: (session: S
     window.addEventListener("resize", reposition);
     return () => window.removeEventListener("resize", reposition);
   }, [open]);
+
+  // Issue #170: a desktop notification's onclick handler bumps
+  // `notificationsPanelOpenRequest` via the store (this component can't be
+  // reached with a prop from App.tsx — see that field's own comment) instead
+  // of setting `open` directly. The ref starts equal to the current value so
+  // the initial render never opens the panel — only an actual *change*
+  // (a fresh click) does, same "transition, not level" shape as the
+  // seenAttentionRef-style effects this issue's App.tsx side replaces.
+  const openRequestRef = useRef(openRequest);
+  useEffect(() => {
+    if (openRequest === openRequestRef.current) return;
+    openRequestRef.current = openRequest;
+    if (!btnRef.current) return;
+    const rect = btnRef.current.getBoundingClientRect();
+    setPos({ top: rect.bottom + 6, left: rect.left });
+    setOpen(true);
+  }, [openRequest]);
 
   // Advances every session with at least one unread feed item to that
   // session's true latest seq (across ALL its buffered events, not just the
