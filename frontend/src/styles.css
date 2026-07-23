@@ -1164,6 +1164,7 @@ body {
   font-family: "Geist Mono", monospace;
 }
 .session-file-change-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
