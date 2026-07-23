@@ -16,6 +16,7 @@ let projects: Project[];
 let events: Record<number, NotificationEvent[]>;
 let lastSeenSeq: Record<number, number>;
 let dismissedEventKeys: Record<string, true>;
+let notificationsPanelOpenRequest: number;
 
 function eventKey(sessionId: number, seq: number): string {
   return `${sessionId}:${seq}`;
@@ -40,6 +41,7 @@ function storeState() {
     dismissedEventKeys,
     markEventSeen,
     dismissEvent,
+    notificationsPanelOpenRequest,
   };
 }
 
@@ -125,6 +127,7 @@ beforeEach(() => {
   events = {};
   lastSeenSeq = {};
   dismissedEventKeys = {};
+  notificationsPanelOpenRequest = 0;
   markEventSeen.mockClear();
   dismissEvent.mockClear();
   stubVirtualizerLayout();
@@ -270,6 +273,28 @@ describe("NotificationBell", () => {
     lastSeenSeq = { 1: 1 };
     await openPanel();
     expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
+  });
+});
+
+// Issue #170: a desktop notification's onclick handler opens the panel by
+// bumping store.ts's `notificationsPanelOpenRequest` (App.tsx can't reach
+// this component's local `open` state with a prop) rather than the trigger
+// button being clicked directly.
+describe("notificationsPanelOpenRequest (issue #170)", () => {
+  it("does not open the panel on initial mount, even with a nonzero request already pending", () => {
+    notificationsPanelOpenRequest = 3;
+    render(<NotificationBell onOpenSession={vi.fn()} />);
+    expect(screen.queryByText("No notifications yet")).not.toBeInTheDocument();
+  });
+
+  it("opens the panel when the request counter changes after mount", () => {
+    const { rerender } = render(<NotificationBell onOpenSession={vi.fn()} />);
+    expect(screen.queryByText("No notifications yet")).not.toBeInTheDocument();
+
+    notificationsPanelOpenRequest += 1;
+    rerender(<NotificationBell onOpenSession={vi.fn()} />);
+
+    expect(screen.getByText("No notifications yet")).toBeInTheDocument();
   });
 });
 

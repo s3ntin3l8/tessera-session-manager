@@ -233,6 +233,14 @@ interface DashboardState {
   checkForUpdates: () => Promise<void>;
   dismissUpdate: () => void;
   splitRequest: SplitRequest | null;
+  // Issue #170: a desktop notification's click handler (App.tsx) can't reach
+  // into NotificationBell.tsx's own component-local `open`/position state
+  // directly — same reason `splitRequest` above exists rather than a prop
+  // (PaneHeaderActions.tsx can't receive one either; dockview owns that
+  // component's render). Bumped (not a boolean) so requesting "open" while
+  // it's already open still re-triggers NotificationBell.tsx's effect — a
+  // plain boolean toggled true->true wouldn't change.
+  notificationsPanelOpenRequest: number;
   // May reference a workspace that no longer exists (deleted in another
   // tab, or a stale localStorage value) — App.tsx is responsible for
   // falling back to first-available/create-default when that happens.
@@ -327,6 +335,10 @@ interface DashboardState {
   setSidebarWidth: (value: number) => void;
   requestSplit: (referencePanelId: string, direction: "right" | "below") => void;
   clearSplitRequest: () => void;
+  // Issue #170's counterpart to `notificationsPanelOpenRequest` above — a
+  // desktop notification's onclick handler calls this instead of setting
+  // NotificationBell.tsx's local state directly.
+  openNotificationsPanel: () => void;
   // Starts the ~4s session-status poll (paused while the tab is hidden) and
   // returns a cleanup function — called once from App.tsx's mount effect.
   // Kept as a store action (rather than plain App.tsx setInterval) so any
@@ -434,6 +446,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
     sidebarCollapsed: localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1",
     sidebarWidth: readStoredSidebarWidth(),
     splitRequest: null,
+    notificationsPanelOpenRequest: 0,
     backendReachable: true,
     currentVersion: null,
     updateCheck: null,
@@ -740,6 +753,10 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
 
     clearSplitRequest: () => {
       set({ splitRequest: null });
+    },
+
+    openNotificationsPanel: () => {
+      set((state) => ({ notificationsPanelOpenRequest: state.notificationsPanelOpenRequest + 1 }));
     },
 
     startLiveRefresh: () => {
