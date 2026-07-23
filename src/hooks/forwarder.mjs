@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 // Shared shell-command-hook forwarder (issue #174) — invoked by every
-// shell-command-hook agent's generated config (Claude Code today; Codex/agy
-// reuse this same file in follow-up PRs, see the plan's Cross-cutting
+// shell-command-hook agent's generated config (Claude Code and Codex today;
+// agy reuses this same file in a follow-up PR, see the plan's Cross-cutting
 // "Forwarder" section) as:
 //
 //   node <this file> <agent> <kind>
 //
 // with the hook's own JSON payload on stdin. Reads stdin, maps it (via
-// forwarder-core.mjs's pure per-agent dialect) to a hook-protocol message,
-// connects to $MULLION_HOOK_SOCKET, sends the handshake + message line, and
-// exits. Deliberately plain JavaScript, not TypeScript: this file is spawned
+// forwarder-core.mjs's pure per-agent dialect) to hook-protocol message(s),
+// connects to $MULLION_HOOK_SOCKET, sends the handshake + one or more
+// message lines, and exits. Deliberately plain JavaScript, not TypeScript:
+// this file is spawned
 // directly by an external agent's own hook runner, not imported by Mullion's
 // server process, so it must run identically under `make dev` (tsx never
 // touches it — there is no dist/ yet) and in production (`make build` copies
@@ -59,8 +60,12 @@ async function main() {
 
   const raw = await readStdin();
   const payload = parseHookStdin(raw);
-  const message = buildForwarderMessage(agent, kind, payload);
-  if (message === null) {
+  const result = buildForwarderMessage(agent, kind, payload);
+  // A dialect returns one message, several (a single apply_patch call can
+  // touch multiple files — see forwarder-core.mjs's mapCodexPostToolUse),
+  // or nothing at all.
+  const messages = Array.isArray(result) ? result : result === null ? [] : [result];
+  if (messages.length === 0) {
     return;
   }
 
@@ -82,7 +87,9 @@ async function main() {
 
     socket.once("connect", () => {
       socket.write(`${JSON.stringify({ token })}\n`);
-      socket.write(`${JSON.stringify(message)}\n`);
+      for (const message of messages) {
+        socket.write(`${JSON.stringify(message)}\n`);
+      }
       socket.end();
     });
     socket.once("close", finish);
