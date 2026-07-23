@@ -862,7 +862,14 @@ describe("internal routes (agent role, issue #26)", () => {
         payload: { title: "working" },
       });
 
-      pty.emitData("done\x07");
+      // A working->idle title transition (#98) is a zero-threshold attention
+      // signal (see ATTENTION_CONFIRM_MS in attention-detect.ts) — confirms
+      // synchronously, unlike a bare bell (debounced against attention-detect.ts's
+      // PENDING_ATTENTION state machine — see issue #171), which needs either
+      // a real ~2s wait or a direct Session.tick() call this route-level test
+      // has no access to. The session's title is already "working" from the
+      // pre-connect emit above, so this is a genuine transition.
+      pty.emitData("\x1b]2;idle\x07");
       await waitUntil(() => messages.some((m) => m.kind === "attention"));
 
       ws.close();
