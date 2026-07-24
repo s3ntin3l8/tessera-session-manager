@@ -53,9 +53,20 @@ vi.mock("./store.js", () => {
 // Minimal review gate (issue #178) — GateActions calls api.resolveReviewGate
 // directly (not through the store), so it's mocked the same
 // selector-independent way.
-const resolveReviewGate = vi.fn(() => Promise.resolve());
+const resolveReviewGate = vi.fn((_id: number, _decision: "approved" | "denied", _reason?: string) =>
+  Promise.resolve(),
+);
+// A lazy wrapper, not `{ resolveReviewGate }` directly: vi.mock's factory
+// runs at module-resolution time (hoisted above this file's own `const`
+// declarations), before `resolveReviewGate` above has actually initialized
+// — referencing it directly here would hit the same TDZ vi.mock footgun
+// store.js's mock below avoids via storeState() being a lazily-invoked
+// function declaration instead.
 vi.mock("./api.js", () => ({
-  api: { resolveReviewGate: (...args: unknown[]) => resolveReviewGate(...args) },
+  api: {
+    resolveReviewGate: (...args: [number, "approved" | "denied", string?]) =>
+      resolveReviewGate(...args),
+  },
 }));
 
 function makeSession(overrides: Partial<Session> = {}): Session {
