@@ -65,6 +65,7 @@ describe("updates route", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     delete process.env.MULLION_HOME;
+    delete process.env.MULLION_SERVICE_UNIT;
     fs.rmSync(mullionHome, { recursive: true, force: true });
   });
 
@@ -378,7 +379,14 @@ describe("updates route", () => {
       expect(spawnMock).toHaveBeenCalledTimes(1);
       const [command, argv, opts] = spawnMock.mock.calls[0];
       expect(command).toBe("systemd-run");
-      expect(argv).toEqual([
+      // No MULLION_SERVICE_UNIT override is set, so the last arg is whatever
+      // resolveServiceUnit's cgroup autodetection finds on *this* host — not
+      // necessarily the "mullion.service" default. A CI/dev host running
+      // this test suite from inside its own systemd .service unit (or any
+      // other real .service cgroup) would make an exact-value assertion here
+      // flaky, so only the shape is checked; the override path below is
+      // where the exact resolved value is verified.
+      expect(argv.slice(0, -1)).toEqual([
         "--user",
         "--scope",
         "--collect",
@@ -392,7 +400,30 @@ describe("updates route", () => {
         mullionHome,
         process.execPath,
       ]);
+      expect(argv.at(-1)).toMatch(/\.service$/);
       expect(opts).toMatchObject({ cwd: mullionHome, stdio: "ignore" });
+
+      await app.close();
+    });
+
+    it("passes MULLION_SERVICE_UNIT as the resolved unit when set", async () => {
+      process.env.MULLION_HOME = mullionHome;
+      process.env.MULLION_SERVICE_UNIT = "custom-mullion.service";
+      const scriptDir = path.join(mullionHome, "current", "scripts");
+      fs.mkdirSync(scriptDir, { recursive: true });
+      const scriptPath = path.join(scriptDir, "self-update.sh");
+      fs.writeFileSync(scriptPath, "#!/usr/bin/env bash\n");
+      const app = await buildApp();
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/updates/apply",
+        payload: { version: "0.1.5", assetUrl: VALID_ASSET_URL, checksumUrl: VALID_CHECKSUM_URL },
+      });
+
+      expect(res.statusCode).toBe(202);
+      const [, argv] = spawnMock.mock.calls[0];
+      expect(argv.at(-1)).toBe("custom-mullion.service");
 
       await app.close();
     });
